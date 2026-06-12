@@ -1,9 +1,7 @@
-import 'dart:convert';
-
+import 'package:expired/database_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const ExpiredApp());
@@ -42,30 +40,45 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
   }
 
   Future<void> _loadProducts() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString('expired_products');
-    if (raw == null || raw.isEmpty) {
-      return;
+    try {
+      final records = await AppDatabase.instance.getProducts();
+      if (!mounted) return;
+      setState(() {
+        _products
+          ..clear()
+          ..addAll(
+            records.map(
+              (record) => ProductItem(
+                barcode: record.barcode,
+                name: record.name,
+                manufacturingDate: DateTime.now().subtract(
+                  const Duration(days: 30),
+                ),
+                expiryDate: DateTime.now().add(const Duration(days: 60)),
+                unitPrice: record.price,
+                quantity: 1,
+              ),
+            ),
+          );
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _products.clear());
     }
-
-    final decoded = jsonDecode(raw) as List<dynamic>;
-    setState(() {
-      _products
-        ..clear()
-        ..addAll(
-          decoded.map(
-            (item) => ProductItem.fromJson(item as Map<String, dynamic>),
-          ),
-        );
-    });
   }
 
   Future<void> _saveProducts() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      'expired_products',
-      jsonEncode(_products.map((p) => p.toJson()).toList()),
-    );
+    for (final product in _products) {
+      await AppDatabase.instance.upsertProduct(
+        ProductRecord(
+          barcode: product.barcode,
+          name: product.name,
+          price: product.unitPrice,
+          volume: product.quantity.toString(),
+          createdAt: DateTime.now().toIso8601String(),
+        ),
+      );
+    }
   }
 
   Future<void> _openProductSheet({ProductItem? product, int? index}) async {
@@ -108,10 +121,15 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
   }
 
   Future<void> _deleteProduct(int index) async {
+    final product = _products[index];
     setState(() {
       _products.removeAt(index);
     });
-    await _saveProducts();
+    await AppDatabase.instance.deleteProduct(
+      await AppDatabase.instance
+          .findProductByBarcode(product.barcode)
+          .then((value) => value?.id ?? -1),
+    );
   }
 
   @override
@@ -358,13 +376,16 @@ class _ProductFormState extends State<ProductForm> {
   late final TextEditingController nameController;
   late final TextEditingController priceController;
   late final TextEditingController quantityController;
+  late final TextEditingController categoryController;
   final MobileScannerController scannerController = MobileScannerController();
+  List<CategoryRecord> _categories = const [];
   late DateTime manufacturingDate;
   late DateTime expiryDate;
 
   @override
   void initState() {
     super.initState();
+    _loadCategories();
     final product = widget.product;
     barcodeController = TextEditingController(text: product?.barcode ?? '');
     nameController = TextEditingController(text: product?.name ?? '');
@@ -374,11 +395,18 @@ class _ProductFormState extends State<ProductForm> {
     quantityController = TextEditingController(
       text: product?.quantity.toString() ?? '1',
     );
+    categoryController = TextEditingController();
     manufacturingDate =
         product?.manufacturingDate ??
         DateTime.now().subtract(const Duration(days: 30));
     expiryDate =
         product?.expiryDate ?? DateTime.now().add(const Duration(days: 60));
+  }
+
+  Future<void> _loadCategories() async {
+    final categories = await AppDatabase.instance.getCategories();
+    if (!mounted) return;
+    setState(() => _categories = categories);
   }
 
   @override
@@ -387,6 +415,7 @@ class _ProductFormState extends State<ProductForm> {
     nameController.dispose();
     priceController.dispose();
     quantityController.dispose();
+    categoryController.dispose();
     scannerController.dispose();
     super.dispose();
   }
@@ -447,6 +476,14 @@ class _ProductFormState extends State<ProductForm> {
                       }
 
                       barcodeController.text = value;
+                      AppDatabase.instance.findProductByBarcode(value).then((
+                        record,
+                      ) {
+                        if (!mounted || record == null) return;
+                        nameController.text = record.name;
+                        priceController.text = record.price.toString();
+                        quantityController.text = record.volume;
+                      });
                       Navigator.of(sheetContext).pop();
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(content: Text('Barcode captured: $value')),
@@ -500,6 +537,35 @@ class _ProductFormState extends State<ProductForm> {
               labelText: 'Product name',
               border: OutlineInputBorder(),
             ),
+          ),
+          const SizedBox(height: 12),
+          Autocomplete<String>(
+            optionsBuilder: (textEditingValue) {
+              if (textEditingValue.text.isEmpty) {
+                return _categories.map((category) => category.name);
+              }
+              return _categories
+                  .map((category) => category.name)
+                  .where(
+                    (name) => name.toLowerCase().contains(
+                      textEditingValue.text.toLowerCase(),
+                    ),
+                  );
+            },
+            onSelected: (value) => categoryController.text = value,
+            fieldViewBuilder:
+                (context, controller, focusNode, onFieldSubmitted) {
+                  categoryController = controller;
+                  return TextField(
+                    controller: controller,
+                    focusNode: focusNode,
+                    decoration: const InputDecoration(
+                      labelText: 'Category',
+                      border: OutlineInputBorder(),
+                      hintText: 'Choose or type a category',
+                    ),
+                  );
+                },
           ),
           const SizedBox(height: 12),
           Row(
@@ -585,6 +651,39 @@ class _ProductFormState extends State<ProductForm> {
 
                 final price = double.tryParse(priceController.text) ?? 0.0;
                 final quantity = int.tryParse(quantityController.text) ?? 1;
+                final categoryName = categoryController.text.trim();
+
+                final existingProduct = await AppDatabase.instance
+                    .findProductByBarcode(barcode);
+                final productId = await AppDatabase.instance.upsertProduct(
+                  ProductRecord(
+                    id: existingProduct?.id,
+                    barcode: barcode,
+                    name: name,
+                    price: price,
+                    volume: quantity.toString(),
+                    createdAt:
+                        existingProduct?.createdAt ??
+                        DateTime.now().toIso8601String(),
+                  ),
+                );
+
+                final category = _categories
+                    .where(
+                      (item) =>
+                          item.name.toLowerCase() == categoryName.toLowerCase(),
+                    )
+                    .firstOrNull;
+                await AppDatabase.instance.insertItem(
+                  InventoryItemRecord(
+                    productId: productId,
+                    categoryId: category?.id,
+                    purchaseDate: manufacturingDate.toIso8601String(),
+                    entryDate: DateTime.now().toIso8601String(),
+                    finished: 0,
+                    createdAt: DateTime.now().toIso8601String(),
+                  ),
+                );
 
                 await widget.onSave(
                   ProductItem(
