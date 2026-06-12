@@ -12,11 +12,67 @@ class ExpiredApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    const _slate900 = Color(0xFF0F172A);
+    const _slate700 = Color(0xFF334155);
+    const _slate100 = Color(0xFFF1F5F9);
+    const _indigo500 = Color(0xFF6366F1);
+
     return MaterialApp(
       title: 'Expired',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: _indigo500,
+          brightness: Brightness.light,
+        ),
+        scaffoldBackgroundColor: _slate100,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: _slate100,
+          foregroundColor: _slate900,
+          elevation: 0,
+          centerTitle: false,
+          titleTextStyle: TextStyle(
+            color: _slate900,
+            fontSize: 22,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.5,
+          ),
+        ),
+        cardTheme: CardThemeData(
+          color: Colors.white,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: _slate100,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: _indigo500, width: 1.5),
+          ),
+          labelStyle: TextStyle(color: _slate700, fontSize: 14),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        ),
+        textTheme: const TextTheme(
+          titleLarge: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+            color: _slate900,
+            letterSpacing: -0.3,
+          ),
+          bodyMedium: TextStyle(color: _slate700, fontSize: 14),
+          bodySmall: TextStyle(color: _slate700, fontSize: 12),
+        ),
       ),
       home: const ProductDashboardPage(),
       debugShowCheckedModeBanner: false,
@@ -147,110 +203,169 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
         ? _products.where((p) => p.daysUntilExpiry <= 7).toList()
         : List<ProductItem>.from(_products);
 
+    const indigo = Color(0xFF6366F1);
+    const amber = Color(0xFFF59E0B);
+    const slate900 = Color(0xFF0F172A);
+    const slate500 = Color(0xFF64748B);
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Expired'),
         actions: [
-          IconButton(
-            onPressed: () => _openProductSheet(),
-            icon: const Icon(Icons.add_circle_outline),
+          Container(
+            margin: const EdgeInsets.only(right: 8),
+            child: IconButton(
+              onPressed: () => _openProductSheet(),
+              icon: const Icon(Icons.add, size: 22),
+              style: IconButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: slate900,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
           ),
         ],
       ),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Keep track of products that are close to expiry.',
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyMedium?.copyWith(color: Colors.grey[700]),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // header greeting
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+              child: Text(
+                'Track products before they expire.',
+                style: TextStyle(
+                  color: slate500,
+                  fontSize: 14,
+                  height: 1.4,
+                ),
               ),
-              const SizedBox(height: 16),
-              Row(
+            ),
+            // stat cards
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
                 children: [
                   Expanded(
                     child: _SummaryCard(
-                      title: 'Products',
+                      title: 'Total',
                       value: '${_products.length}',
-                      accent: Colors.teal,
+                      accent: indigo,
+                      icon: Icons.inventory_2_rounded,
                       isActive: _filter == _DashboardFilter.all,
-                      onTap: () => setState(
-                        () => _filter = _DashboardFilter.all,
-                      ),
+                      onTap: () => setState(() => _filter = _DashboardFilter.all),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     child: _SummaryCard(
-                      title: 'Expiring in 7 days',
+                      title: 'Expiring soon',
                       value: '$expiringSoon',
-                      accent: Colors.orange,
+                      accent: amber,
+                      icon: Icons.warning_amber_rounded,
                       isActive: _filter == _DashboardFilter.expiringSoon,
-                      onTap: () => setState(
-                        () => _filter = _DashboardFilter.expiringSoon,
-                      ),
+                      onTap: () => setState(() => _filter = _DashboardFilter.expiringSoon),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 20),
-              Row(
+            ),
+            const SizedBox(height: 24),
+            // section header
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
                 children: [
-                  Text('Dashboard', style: Theme.of(context).textTheme.titleLarge),
-                  if (_filter == _DashboardFilter.expiringSoon) ...
-                    [
-                      const SizedBox(width: 8),
-                      Chip(
-                        label: const Text('Expiring soon'),
-                        backgroundColor: Colors.orange.withOpacity(0.15),
-                        side: const BorderSide(color: Colors.orange),
-                        deleteIcon: const Icon(Icons.close, size: 16),
-                        onDeleted: () => setState(
-                          () => _filter = _DashboardFilter.all,
+                  Text(
+                    _filter == _DashboardFilter.expiringSoon
+                        ? 'Expiring Soon'
+                        : 'All Products',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: slate900,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (_filter == _DashboardFilter.expiringSoon)
+                    GestureDetector(
+                      onTap: () => setState(() => _filter = _DashboardFilter.all),
+                      child: Text(
+                        'Show all',
+                        style: TextStyle(
+                          color: indigo,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
-                    ],
+                    ),
                 ],
               ),
-              const SizedBox(height: 8),
-              Expanded(
-                child: displayedProducts.isEmpty
-                    ? Center(
-                        child: Text(
-                          _filter == _DashboardFilter.expiringSoon
-                              ? 'No products expiring soon'
-                              : 'No products yet',
-                          style: const TextStyle(fontSize: 16),
-                        ),
-                      )
-                    : ListView.builder(
-                        itemCount: displayedProducts.length,
-                        itemBuilder: (context, index) {
-                          final product = displayedProducts[index];
-                          final originalIndex = _products.indexOf(product);
-                          return _ProductCard(
-                            product: product,
-                            onEdit: () => _openProductSheet(
-                              product: product,
-                              index: originalIndex,
+            ),
+            const SizedBox(height: 12),
+            // list
+            Expanded(
+              child: displayedProducts.isEmpty
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            _filter == _DashboardFilter.expiringSoon
+                                ? Icons.check_circle_outline_rounded
+                                : Icons.inventory_2_outlined,
+                            size: 52,
+                            color: slate500.withValues(alpha: 0.4),
+                          ),
+                          const SizedBox(height: 12),
+                          Text(
+                            _filter == _DashboardFilter.expiringSoon
+                                ? 'Nothing expiring soon'
+                                : 'No products yet',
+                            style: TextStyle(
+                              fontSize: 15,
+                              color: slate500,
+                              fontWeight: FontWeight.w500,
                             ),
-                            onDelete: () => _deleteProduct(originalIndex),
-                          );
-                        },
+                          ),
+                        ],
                       ),
-              ),
-            ],
-          ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      itemCount: displayedProducts.length,
+                      itemBuilder: (context, index) {
+                        final product = displayedProducts[index];
+                        final originalIndex = _products.indexOf(product);
+                        return _ProductCard(
+                          product: product,
+                          onEdit: () => _openProductSheet(
+                            product: product,
+                            index: originalIndex,
+                          ),
+                          onDelete: () => _deleteProduct(originalIndex),
+                        );
+                      },
+                    ),
+            ),
+          ],
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openProductSheet(),
-        icon: const Icon(Icons.qr_code_scanner_outlined),
-        label: const Text('Add product'),
+        backgroundColor: const Color(0xFF6366F1),
+        foregroundColor: Colors.white,
+        elevation: 0,
+        icon: const Icon(Icons.qr_code_scanner_rounded, size: 20),
+        label: const Text(
+          'Scan / Add',
+          style: TextStyle(fontWeight: FontWeight.w600, letterSpacing: 0.2),
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
     );
   }
@@ -261,6 +376,7 @@ class _SummaryCard extends StatelessWidget {
     required this.title,
     required this.value,
     required this.accent,
+    required this.icon,
     required this.isActive,
     required this.onTap,
   });
@@ -268,58 +384,77 @@ class _SummaryCard extends StatelessWidget {
   final String title;
   final String value;
   final Color accent;
+  final IconData icon;
   final bool isActive;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 200),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        border: isActive
-            ? Border.all(color: accent, width: 2)
-            : Border.all(color: Colors.transparent, width: 2),
-      ),
-      child: Card(
-        elevation: isActive ? 2 : 0,
-        margin: EdgeInsets.zero,
-        color: isActive ? accent.withValues(alpha: 0.14) : accent.withValues(alpha: 0.07),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(10),
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        title,
-                        style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                          color: isActive ? accent : Colors.grey[700],
-                          fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
-                        ),
-                      ),
-                    ),
-                    if (isActive)
-                      Icon(Icons.filter_list_rounded, size: 14, color: accent),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  value,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: isActive ? accent : null,
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeInOut,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: isActive ? accent : Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: isActive
+              ? [
+                  BoxShadow(
+                    color: accent.withValues(alpha: 0.35),
+                    blurRadius: 16,
+                    offset: const Offset(0, 6),
                   ),
-                ),
-              ],
+                ]
+              : [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.05),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: isActive
+                    ? Colors.white.withValues(alpha: 0.25)
+                    : accent.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(
+                icon,
+                size: 18,
+                color: isActive ? Colors.white : accent,
+              ),
             ),
-          ),
+            const SizedBox(height: 12),
+            Text(
+              value,
+              style: TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.w800,
+                color: isActive ? Colors.white : const Color(0xFF0F172A),
+                height: 1,
+                letterSpacing: -1,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: isActive
+                    ? Colors.white.withValues(alpha: 0.8)
+                    : const Color(0xFF64748B),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -340,90 +475,188 @@ class _ProductCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final days = product.daysUntilExpiry;
+    final critical = days <= 3;
     final warning = days <= 7;
+    final accentColor = critical
+        ? const Color(0xFFEF4444)
+        : warning
+            ? const Color(0xFFF59E0B)
+            : const Color(0xFF10B981);
+    final expiryLabel = days < 0
+        ? 'Expired'
+        : days == 0
+            ? 'Today'
+            : '$days d left';
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            CircleAvatar(
-              radius: 22,
-              backgroundColor: warning
-                  ? Colors.orange.withOpacity(0.14)
-                  : Colors.teal.withOpacity(0.12),
-              child: Icon(
-                Icons.inventory_2_outlined,
-                color: warning ? Colors.orange : Colors.teal,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '${product.name}${product.volume.isNotEmpty ? ' (${product.volume})' : ''}',
-                    style: const TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 4),
-                  Text('Barcode: ${product.barcode}'),
-                  const SizedBox(height: 2),
-                  Text(
-                    'Expiry: ${product.expiryDate.toLocal().toString().split(' ').first} • Qty: ${product.quantity} • ${product.unitPrice.toStringAsFixed(2)} / unit',
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            SizedBox(
-              width: 88,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(warning ? '$days days left' : 'Safe'),
-                  if (warning)
-                    const Text(
-                      'Alert',
-                      style: TextStyle(
-                        color: Colors.orange,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  const SizedBox(height: 4),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    mainAxisAlignment: MainAxisAlignment.end,
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // left accent bar
+              Container(width: 4, color: accentColor),
+              // content
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      IconButton(
-                        tooltip: 'Edit',
-                        onPressed: onEdit,
-                        icon: const Icon(Icons.edit_outlined, size: 18),
-                        visualDensity: VisualDensity.compact,
-                        padding: EdgeInsets.zero,
-                        constraints: BoxConstraints.tight(const Size(32, 32)),
-                      ),
-                      IconButton(
-                        tooltip: 'Delete',
-                        onPressed: onDelete,
-                        icon: const Icon(
-                          Icons.delete_outline,
-                          size: 18,
-                          color: Colors.red,
+                      // icon
+                      Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          color: accentColor.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        visualDensity: VisualDensity.compact,
-                        padding: EdgeInsets.zero,
-                        constraints: BoxConstraints.tight(const Size(32, 32)),
+                        child: Icon(
+                          Icons.inventory_2_rounded,
+                          size: 20,
+                          color: accentColor,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      // info
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              product.name,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 14,
+                                color: Color(0xFF0F172A),
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (product.volume.isNotEmpty)
+                              Text(
+                                product.volume,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF64748B),
+                                ),
+                              ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                _Tag(
+                                  label: expiryLabel,
+                                  color: accentColor,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Qty ${product.quantity}  ·  ৳${product.unitPrice.toStringAsFixed(0)}',
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Color(0xFF64748B),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      // actions
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _ActionBtn(
+                            icon: Icons.edit_rounded,
+                            color: const Color(0xFF6366F1),
+                            onPressed: onEdit,
+                            tooltip: 'Edit',
+                          ),
+                          const SizedBox(height: 4),
+                          _ActionBtn(
+                            icon: Icons.delete_rounded,
+                            color: const Color(0xFFEF4444),
+                            onPressed: onDelete,
+                            tooltip: 'Delete',
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Tag extends StatelessWidget {
+  const _Tag({required this.label, required this.color});
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: color,
+        ),
+      ),
+    );
+  }
+}
+
+class _ActionBtn extends StatelessWidget {
+  const _ActionBtn({
+    required this.icon,
+    required this.color,
+    required this.onPressed,
+    required this.tooltip,
+  });
+  final IconData icon;
+  final Color color;
+  final VoidCallback onPressed;
+  final String tooltip;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onPressed,
+        child: Container(
+          width: 32,
+          height: 32,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Icon(icon, size: 16, color: color),
         ),
       ),
     );
@@ -642,29 +875,54 @@ class _ProductFormState extends State<ProductForm> {
 
   @override
   Widget build(BuildContext context) {
+    const indigo = Color(0xFF6366F1);
+    const slate900 = Color(0xFF0F172A);
+    const slate500 = Color(0xFF64748B);
+
     return SingleChildScrollView(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            widget.product == null ? 'New product' : 'Edit product',
-            style: Theme.of(context).textTheme.titleLarge,
+          Row(
+            children: [
+              Container(
+                width: 4,
+                height: 28,
+                decoration: BoxDecoration(
+                  color: indigo,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                widget.product == null ? 'New Product' : 'Edit Product',
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: slate900,
+                  letterSpacing: -0.5,
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          Text(
-            widget.product == null
-                ? 'Capture product details quickly for the dashboard.'
-                : 'Update the saved product details below.',
-            style: Theme.of(context).textTheme.bodyMedium,
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.only(left: 14),
+            child: Text(
+              widget.product == null
+                  ? 'Fill in the details below to add a product.'
+                  : 'Update the saved product details.',
+              style: const TextStyle(color: slate500, fontSize: 13),
+            ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 20),
           if (_loadError != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
                 _loadError!,
-                style: const TextStyle(color: Colors.orange),
+                style: const TextStyle(color: Color(0xFFF59E0B)),
               ),
             ),
           if (_isLoadingCategories)
@@ -858,10 +1116,24 @@ class _ProductFormState extends State<ProductForm> {
               ),
             ],
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 20),
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF6366F1),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                elevation: 0,
+                textStyle: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 15,
+                  letterSpacing: 0.2,
+                ),
+              ),
               onPressed: _isLoadingCategories
                   ? null
                   : () async {
