@@ -68,7 +68,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
     );
   }
 
-  Future<void> _openAddProductSheet() async {
+  Future<void> _openProductSheet({ProductItem? product, int? index}) async {
     final navigator = Navigator.of(context);
 
     await showModalBottomSheet<void>(
@@ -86,9 +86,14 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
             bottom: MediaQuery.of(bottomSheetContext).viewInsets.bottom + 16,
           ),
           child: ProductForm(
-            onSave: (product) async {
+            product: product,
+            onSave: (updatedProduct) async {
               setState(() {
-                _products.add(product);
+                if (index == null) {
+                  _products.add(updatedProduct);
+                } else {
+                  _products[index] = updatedProduct;
+                }
                 _products.sort((a, b) => a.expiryDate.compareTo(b.expiryDate));
               });
               await _saveProducts();
@@ -102,6 +107,13 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
     );
   }
 
+  Future<void> _deleteProduct(int index) async {
+    setState(() {
+      _products.removeAt(index);
+    });
+    await _saveProducts();
+  }
+
   @override
   Widget build(BuildContext context) {
     final expiringSoon = _products
@@ -113,7 +125,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
         title: const Text('Expired'),
         actions: [
           IconButton(
-            onPressed: _openAddProductSheet,
+            onPressed: () => _openProductSheet(),
             icon: const Icon(Icons.add_circle_outline),
           ),
         ],
@@ -163,8 +175,14 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                       )
                     : ListView.builder(
                         itemCount: _products.length,
-                        itemBuilder: (context, index) =>
-                            _ProductCard(product: _products[index]),
+                        itemBuilder: (context, index) => _ProductCard(
+                          product: _products[index],
+                          onEdit: () => _openProductSheet(
+                            product: _products[index],
+                            index: index,
+                          ),
+                          onDelete: () => _deleteProduct(index),
+                        ),
                       ),
               ),
             ],
@@ -172,7 +190,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openAddProductSheet,
+        onPressed: () => _openProductSheet(),
         icon: const Icon(Icons.qr_code_scanner_outlined),
         label: const Text('Add product'),
       ),
@@ -222,9 +240,15 @@ class _SummaryCard extends StatelessWidget {
 }
 
 class _ProductCard extends StatelessWidget {
-  const _ProductCard({required this.product});
+  const _ProductCard({
+    required this.product,
+    required this.onEdit,
+    required this.onDelete,
+  });
 
   final ProductItem product;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -233,42 +257,85 @@ class _ProductCard extends StatelessWidget {
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
-      child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: warning
-              ? Colors.orange.withValues(alpha: 0.14)
-              : Colors.teal.withValues(alpha: 0.12),
-          child: Icon(
-            Icons.inventory_2_outlined,
-            color: warning ? Colors.orange : Colors.teal,
-          ),
-        ),
-        title: Text(
-          product.name,
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-        subtitle: Column(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Barcode: ${product.barcode}'),
-            Text(
-              'Expiry: ${product.expiryDate.toLocal().toString().split(' ').first} • ${product.unitPrice.toStringAsFixed(2)} / unit',
-            ),
-          ],
-        ),
-        trailing: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Text(warning ? '$days days left' : 'Safe'),
-            if (warning)
-              const Text(
-                'Alert',
-                style: TextStyle(
-                  color: Colors.orange,
-                  fontWeight: FontWeight.w600,
-                ),
+            CircleAvatar(
+              radius: 22,
+              backgroundColor: warning
+                  ? Colors.orange.withValues(alpha: 0.14)
+                  : Colors.teal.withValues(alpha: 0.12),
+              child: Icon(
+                Icons.inventory_2_outlined,
+                color: warning ? Colors.orange : Colors.teal,
               ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    product.name,
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 4),
+                  Text('Barcode: ${product.barcode}'),
+                  const SizedBox(height: 2),
+                  Text(
+                    'Expiry: ${product.expiryDate.toLocal().toString().split(' ').first} • ${product.unitPrice.toStringAsFixed(2)} / unit',
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 88,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(warning ? '$days days left' : 'Safe'),
+                  if (warning)
+                    const Text(
+                      'Alert',
+                      style: TextStyle(
+                        color: Colors.orange,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      IconButton(
+                        tooltip: 'Edit',
+                        onPressed: onEdit,
+                        icon: const Icon(Icons.edit_outlined, size: 18),
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: BoxConstraints.tight(const Size(32, 32)),
+                      ),
+                      IconButton(
+                        tooltip: 'Delete',
+                        onPressed: onDelete,
+                        icon: const Icon(
+                          Icons.delete_outline,
+                          size: 18,
+                          color: Colors.red,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                        constraints: BoxConstraints.tight(const Size(32, 32)),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -277,24 +344,42 @@ class _ProductCard extends StatelessWidget {
 }
 
 class ProductForm extends StatefulWidget {
-  const ProductForm({required this.onSave, super.key});
+  const ProductForm({required this.onSave, this.product, super.key});
 
   final Future<void> Function(ProductItem) onSave;
+  final ProductItem? product;
 
   @override
   State<ProductForm> createState() => _ProductFormState();
 }
 
 class _ProductFormState extends State<ProductForm> {
-  final barcodeController = TextEditingController();
-  final nameController = TextEditingController();
-  final priceController = TextEditingController();
-  final quantityController = TextEditingController(text: '1');
+  late final TextEditingController barcodeController;
+  late final TextEditingController nameController;
+  late final TextEditingController priceController;
+  late final TextEditingController quantityController;
   final MobileScannerController scannerController = MobileScannerController();
-  DateTime manufacturingDate = DateTime.now().subtract(
-    const Duration(days: 30),
-  );
-  DateTime expiryDate = DateTime.now().add(const Duration(days: 60));
+  late DateTime manufacturingDate;
+  late DateTime expiryDate;
+
+  @override
+  void initState() {
+    super.initState();
+    final product = widget.product;
+    barcodeController = TextEditingController(text: product?.barcode ?? '');
+    nameController = TextEditingController(text: product?.name ?? '');
+    priceController = TextEditingController(
+      text: product?.unitPrice.toString() ?? '',
+    );
+    quantityController = TextEditingController(
+      text: product?.quantity.toString() ?? '1',
+    );
+    manufacturingDate =
+        product?.manufacturingDate ??
+        DateTime.now().subtract(const Duration(days: 30));
+    expiryDate =
+        product?.expiryDate ?? DateTime.now().add(const Duration(days: 60));
+  }
 
   @override
   void dispose() {
@@ -384,10 +469,15 @@ class _ProductFormState extends State<ProductForm> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('New product', style: Theme.of(context).textTheme.titleLarge),
+          Text(
+            widget.product == null ? 'New product' : 'Edit product',
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
           const SizedBox(height: 8),
           Text(
-            'Capture product details quickly for the dashboard.',
+            widget.product == null
+                ? 'Capture product details quickly for the dashboard.'
+                : 'Update the saved product details below.',
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 16),
@@ -508,7 +598,9 @@ class _ProductFormState extends State<ProductForm> {
                 );
               },
               icon: const Icon(Icons.save_alt),
-              label: const Text('Save product'),
+              label: Text(
+                widget.product == null ? 'Save product' : 'Update product',
+              ),
             ),
           ),
         ],
