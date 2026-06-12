@@ -380,6 +380,8 @@ class _ProductFormState extends State<ProductForm> {
   late final TextEditingController categoryController;
   final MobileScannerController scannerController = MobileScannerController();
   List<CategoryRecord> _categories = const [];
+  bool _isLoadingCategories = true;
+  String? _loadError;
   late DateTime manufacturingDate;
   late DateTime expiryDate;
 
@@ -405,9 +407,22 @@ class _ProductFormState extends State<ProductForm> {
   }
 
   Future<void> _loadCategories() async {
-    final categories = await AppDatabase.instance.getCategories();
-    if (!mounted) return;
-    setState(() => _categories = categories);
+    try {
+      final categories = await AppDatabase.instance.getCategories();
+      if (!mounted) return;
+      setState(() {
+        _categories = categories;
+        _isLoadingCategories = false;
+        _loadError = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _categories = const [];
+        _isLoadingCategories = false;
+        _loadError = 'Unable to load categories right now.';
+      });
+    }
   }
 
   @override
@@ -422,82 +437,90 @@ class _ProductFormState extends State<ProductForm> {
   }
 
   Future<void> _openBarcodeScanner() async {
-    final status = await Permission.camera.request();
+    try {
+      final status = await Permission.camera.request();
 
-    if (!mounted) {
-      return;
-    }
+      if (!mounted) {
+        return;
+      }
 
-    if (!status.isGranted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Camera permission is required to scan barcodes.'),
-        ),
-      );
-      return;
-    }
-
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (sheetContext) {
-        return SafeArea(
-          child: SizedBox(
-            height: MediaQuery.of(sheetContext).size.height * 0.72,
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'Scan barcode',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: () => Navigator.of(sheetContext).pop(),
-                        icon: const Icon(Icons.close),
-                      ),
-                    ],
-                  ),
-                ),
-                Expanded(
-                  child: MobileScanner(
-                    controller: scannerController,
-                    onDetect: (capture) {
-                      final value = capture.barcodes.firstOrNull?.rawValue
-                          ?.trim();
-                      if (value == null || value.isEmpty) {
-                        return;
-                      }
-
-                      barcodeController.text = value;
-                      AppDatabase.instance.findProductByBarcode(value).then((
-                        record,
-                      ) {
-                        if (!mounted || record == null) return;
-                        nameController.text = record.name;
-                        priceController.text = record.price.toString();
-                        quantityController.text = record.volume;
-                      });
-                      Navigator.of(sheetContext).pop();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Barcode captured: $value')),
-                      );
-                    },
-                  ),
-                ),
-              ],
-            ),
+      if (!status.isGranted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Camera permission is required to scan barcodes.'),
           ),
         );
-      },
-    );
+        return;
+      }
+
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        builder: (sheetContext) {
+          return SafeArea(
+            child: SizedBox(
+              height: MediaQuery.of(sheetContext).size.height * 0.72,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Scan barcode',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.of(sheetContext).pop(),
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: MobileScanner(
+                      controller: scannerController,
+                      onDetect: (capture) {
+                        final value = capture.barcodes.firstOrNull?.rawValue
+                            ?.trim();
+                        if (value == null || value.isEmpty) {
+                          return;
+                        }
+
+                        barcodeController.text = value;
+                        AppDatabase.instance
+                            .findProductByBarcode(value)
+                            .then((record) {
+                              if (!mounted || record == null) return;
+                              nameController.text = record.name;
+                              priceController.text = record.price.toString();
+                              quantityController.text = record.volume;
+                            })
+                            .catchError((_) {});
+                        Navigator.of(sheetContext).pop();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Barcode captured: $value')),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to open the scanner right now.')),
+      );
+    }
   }
 
   @override
@@ -519,6 +542,19 @@ class _ProductFormState extends State<ProductForm> {
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 16),
+          if (_loadError != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                _loadError!,
+                style: const TextStyle(color: Colors.orange),
+              ),
+            ),
+          if (_isLoadingCategories)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Center(child: CircularProgressIndicator()),
+            ),
           TextField(
             controller: barcodeController,
             decoration: InputDecoration(
@@ -638,65 +674,73 @@ class _ProductFormState extends State<ProductForm> {
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
-              onPressed: () async {
-                final barcode = barcodeController.text.trim();
-                final name = nameController.text.trim();
-                if (barcode.isEmpty || name.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Please enter barcode and product name.'),
-                    ),
-                  );
-                  return;
-                }
+              onPressed: _isLoadingCategories
+                  ? null
+                  : () async {
+                      final barcode = barcodeController.text.trim();
+                      final name = nameController.text.trim();
+                      if (barcode.isEmpty || name.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Please enter barcode and product name.',
+                            ),
+                          ),
+                        );
+                        return;
+                      }
 
-                final price = double.tryParse(priceController.text) ?? 0.0;
-                final quantity = int.tryParse(quantityController.text) ?? 1;
-                final categoryName = categoryController.text.trim();
+                      final price =
+                          double.tryParse(priceController.text) ?? 0.0;
+                      final quantity =
+                          int.tryParse(quantityController.text) ?? 1;
+                      final categoryName = categoryController.text.trim();
 
-                final existingProduct = await AppDatabase.instance
-                    .findProductByBarcode(barcode);
-                final productId = await AppDatabase.instance.upsertProduct(
-                  ProductRecord(
-                    id: existingProduct?.id,
-                    barcode: barcode,
-                    name: name,
-                    price: price,
-                    volume: quantity.toString(),
-                    createdAt:
-                        existingProduct?.createdAt ??
-                        DateTime.now().toIso8601String(),
-                  ),
-                );
+                      final existingProduct = await AppDatabase.instance
+                          .findProductByBarcode(barcode);
+                      final productId = await AppDatabase.instance
+                          .upsertProduct(
+                            ProductRecord(
+                              id: existingProduct?.id,
+                              barcode: barcode,
+                              name: name,
+                              price: price,
+                              volume: quantity.toString(),
+                              createdAt:
+                                  existingProduct?.createdAt ??
+                                  DateTime.now().toIso8601String(),
+                            ),
+                          );
 
-                final category = _categories
-                    .where(
-                      (item) =>
-                          item.name.toLowerCase() == categoryName.toLowerCase(),
-                    )
-                    .firstOrNull;
-                await AppDatabase.instance.insertItem(
-                  InventoryItemRecord(
-                    productId: productId,
-                    categoryId: category?.id,
-                    purchaseDate: manufacturingDate.toIso8601String(),
-                    entryDate: DateTime.now().toIso8601String(),
-                    finished: 0,
-                    createdAt: DateTime.now().toIso8601String(),
-                  ),
-                );
+                      final category = _categories
+                          .where(
+                            (item) =>
+                                item.name.toLowerCase() ==
+                                categoryName.toLowerCase(),
+                          )
+                          .firstOrNull;
+                      await AppDatabase.instance.insertItem(
+                        InventoryItemRecord(
+                          productId: productId,
+                          categoryId: category?.id,
+                          purchaseDate: manufacturingDate.toIso8601String(),
+                          entryDate: DateTime.now().toIso8601String(),
+                          finished: 0,
+                          createdAt: DateTime.now().toIso8601String(),
+                        ),
+                      );
 
-                await widget.onSave(
-                  ProductItem(
-                    barcode: barcode,
-                    name: name,
-                    manufacturingDate: manufacturingDate,
-                    expiryDate: expiryDate,
-                    unitPrice: price,
-                    quantity: quantity,
-                  ),
-                );
-              },
+                      await widget.onSave(
+                        ProductItem(
+                          barcode: barcode,
+                          name: name,
+                          manufacturingDate: manufacturingDate,
+                          expiryDate: expiryDate,
+                          unitPrice: price,
+                          quantity: quantity,
+                        ),
+                      );
+                    },
               icon: const Icon(Icons.save_alt),
               label: Text(
                 widget.product == null ? 'Save product' : 'Update product',
