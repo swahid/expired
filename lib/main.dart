@@ -31,8 +31,11 @@ class ProductDashboardPage extends StatefulWidget {
   State<ProductDashboardPage> createState() => _ProductDashboardPageState();
 }
 
+enum _DashboardFilter { all, expiringSoon }
+
 class _ProductDashboardPageState extends State<ProductDashboardPage> {
   final List<ProductItem> _products = <ProductItem>[];
+  _DashboardFilter _filter = _DashboardFilter.all;
 
   @override
   void initState() {
@@ -52,12 +55,13 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
               (record) => ProductItem(
                 barcode: record.barcode,
                 name: record.name,
-                manufacturingDate: DateTime.now().subtract(
+                purchaseDate: DateTime.now().subtract(
                   const Duration(days: 30),
                 ),
                 expiryDate: DateTime.now().add(const Duration(days: 60)),
                 unitPrice: record.price,
                 quantity: 1,
+                volume: record.volume,
               ),
             ),
           );
@@ -75,7 +79,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
           barcode: product.barcode,
           name: product.name,
           price: product.unitPrice,
-          volume: product.quantity.toString(),
+          volume: product.volume,
           createdAt: DateTime.now().toIso8601String(),
         ),
       );
@@ -139,6 +143,10 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
         .where((product) => product.daysUntilExpiry <= 7)
         .length;
 
+    final displayedProducts = _filter == _DashboardFilter.expiringSoon
+        ? _products.where((p) => p.daysUntilExpiry <= 7).toList()
+        : List<ProductItem>.from(_products);
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Expired'),
@@ -169,6 +177,10 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                       title: 'Products',
                       value: '${_products.length}',
                       accent: Colors.teal,
+                      isActive: _filter == _DashboardFilter.all,
+                      onTap: () => setState(
+                        () => _filter = _DashboardFilter.all,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -177,31 +189,58 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                       title: 'Expiring in 7 days',
                       value: '$expiringSoon',
                       accent: Colors.orange,
+                      isActive: _filter == _DashboardFilter.expiringSoon,
+                      onTap: () => setState(
+                        () => _filter = _DashboardFilter.expiringSoon,
+                      ),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 20),
-              Text('Dashboard', style: Theme.of(context).textTheme.titleLarge),
+              Row(
+                children: [
+                  Text('Dashboard', style: Theme.of(context).textTheme.titleLarge),
+                  if (_filter == _DashboardFilter.expiringSoon) ...
+                    [
+                      const SizedBox(width: 8),
+                      Chip(
+                        label: const Text('Expiring soon'),
+                        backgroundColor: Colors.orange.withOpacity(0.15),
+                        side: const BorderSide(color: Colors.orange),
+                        deleteIcon: const Icon(Icons.close, size: 16),
+                        onDeleted: () => setState(
+                          () => _filter = _DashboardFilter.all,
+                        ),
+                      ),
+                    ],
+                ],
+              ),
               const SizedBox(height: 8),
               Expanded(
-                child: _products.isEmpty
-                    ? const Center(
+                child: displayedProducts.isEmpty
+                    ? Center(
                         child: Text(
-                          'No products yet',
-                          style: TextStyle(fontSize: 16),
+                          _filter == _DashboardFilter.expiringSoon
+                              ? 'No products expiring soon'
+                              : 'No products yet',
+                          style: const TextStyle(fontSize: 16),
                         ),
                       )
                     : ListView.builder(
-                        itemCount: _products.length,
-                        itemBuilder: (context, index) => _ProductCard(
-                          product: _products[index],
-                          onEdit: () => _openProductSheet(
-                            product: _products[index],
-                            index: index,
-                          ),
-                          onDelete: () => _deleteProduct(index),
-                        ),
+                        itemCount: displayedProducts.length,
+                        itemBuilder: (context, index) {
+                          final product = displayedProducts[index];
+                          final originalIndex = _products.indexOf(product);
+                          return _ProductCard(
+                            product: product,
+                            onEdit: () => _openProductSheet(
+                              product: product,
+                              index: originalIndex,
+                            ),
+                            onDelete: () => _deleteProduct(originalIndex),
+                          );
+                        },
                       ),
               ),
             ],
@@ -222,36 +261,65 @@ class _SummaryCard extends StatelessWidget {
     required this.title,
     required this.value,
     required this.accent,
+    required this.isActive,
+    required this.onTap,
   });
 
   final String title;
   final String value;
   final Color accent;
+  final bool isActive;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 0,
-      color: accent.withValues(alpha: 0.08),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: Theme.of(
-                context,
-              ).textTheme.labelMedium?.copyWith(color: Colors.grey[700]),
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: isActive
+            ? Border.all(color: accent, width: 2)
+            : Border.all(color: Colors.transparent, width: 2),
+      ),
+      child: Card(
+        elevation: isActive ? 2 : 0,
+        margin: EdgeInsets.zero,
+        color: isActive ? accent.withValues(alpha: 0.14) : accent.withValues(alpha: 0.07),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                          color: isActive ? accent : Colors.grey[700],
+                          fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+                        ),
+                      ),
+                    ),
+                    if (isActive)
+                      Icon(Icons.filter_list_rounded, size: 14, color: accent),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  value,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: isActive ? accent : null,
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 6),
-            Text(
-              value,
-              style: Theme.of(
-                context,
-              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -284,8 +352,8 @@ class _ProductCard extends StatelessWidget {
             CircleAvatar(
               radius: 22,
               backgroundColor: warning
-                  ? Colors.orange.withValues(alpha: 0.14)
-                  : Colors.teal.withValues(alpha: 0.12),
+                  ? Colors.orange.withOpacity(0.14)
+                  : Colors.teal.withOpacity(0.12),
               child: Icon(
                 Icons.inventory_2_outlined,
                 color: warning ? Colors.orange : Colors.teal,
@@ -297,14 +365,14 @@ class _ProductCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    product.name,
+                    '${product.name}${product.volume.isNotEmpty ? ' (${product.volume})' : ''}',
                     style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 4),
                   Text('Barcode: ${product.barcode}'),
                   const SizedBox(height: 2),
                   Text(
-                    'Expiry: ${product.expiryDate.toLocal().toString().split(' ').first} • ${product.unitPrice.toStringAsFixed(2)} / unit',
+                    'Expiry: ${product.expiryDate.toLocal().toString().split(' ').first} • Qty: ${product.quantity} • ${product.unitPrice.toStringAsFixed(2)} / unit',
                   ),
                 ],
               ),
@@ -377,13 +445,23 @@ class _ProductFormState extends State<ProductForm> {
   late final TextEditingController nameController;
   late final TextEditingController priceController;
   late final TextEditingController quantityController;
-  late final TextEditingController categoryController;
+  late final TextEditingController volumeValueController;
+  String volumeUnit = 'ml';
+  TextEditingController? categoryController;
   final MobileScannerController scannerController = MobileScannerController();
   List<CategoryRecord> _categories = const [];
   bool _isLoadingCategories = true;
   String? _loadError;
-  late DateTime manufacturingDate;
+  late DateTime purchaseDate;
   late DateTime expiryDate;
+
+  // FocusNodes to control next field and skip category autoexpand
+  late final FocusNode barcodeFocusNode;
+  late final FocusNode nameFocusNode;
+  late final FocusNode volumeValueFocusNode;
+  late final FocusNode categoryFocusNode;
+  late final FocusNode priceFocusNode;
+  late final FocusNode quantityFocusNode;
 
   @override
   void initState() {
@@ -398,12 +476,34 @@ class _ProductFormState extends State<ProductForm> {
     quantityController = TextEditingController(
       text: product?.quantity.toString() ?? '1',
     );
-    categoryController = TextEditingController();
-    manufacturingDate =
-        product?.manufacturingDate ??
+
+    final productVolume = product?.volume ?? '';
+    String volValue = '';
+    String volUnit = 'ml';
+    if (productVolume.isNotEmpty) {
+      final parts = productVolume.trim().split(' ');
+      if (parts.length == 2) {
+        volValue = parts[0];
+        volUnit = parts[1];
+      } else {
+        volValue = productVolume;
+      }
+    }
+    volumeValueController = TextEditingController(text: volValue);
+    volumeUnit = ['ml', 'kg', 'gm'].contains(volUnit) ? volUnit : 'ml';
+
+    purchaseDate =
+        product?.purchaseDate ??
         DateTime.now().subtract(const Duration(days: 30));
     expiryDate =
         product?.expiryDate ?? DateTime.now().add(const Duration(days: 60));
+
+    barcodeFocusNode = FocusNode();
+    nameFocusNode = FocusNode();
+    volumeValueFocusNode = FocusNode();
+    categoryFocusNode = FocusNode();
+    priceFocusNode = FocusNode();
+    quantityFocusNode = FocusNode();
   }
 
   Future<void> _loadCategories() async {
@@ -431,7 +531,13 @@ class _ProductFormState extends State<ProductForm> {
     nameController.dispose();
     priceController.dispose();
     quantityController.dispose();
-    categoryController.dispose();
+    volumeValueController.dispose();
+    barcodeFocusNode.dispose();
+    nameFocusNode.dispose();
+    volumeValueFocusNode.dispose();
+    categoryFocusNode.dispose();
+    priceFocusNode.dispose();
+    quantityFocusNode.dispose();
     scannerController.dispose();
     super.dispose();
   }
@@ -496,12 +602,23 @@ class _ProductFormState extends State<ProductForm> {
                         AppDatabase.instance
                             .findProductByBarcode(value)
                             .then((record) {
-                              if (!mounted || record == null) return;
-                              nameController.text = record.name;
-                              priceController.text = record.price.toString();
-                              quantityController.text = record.volume;
+                              if (!mounted) return;
+                              if (record != null) {
+                                nameController.text = record.name;
+                                priceController.text = record.price.toString();
+                                final parts = record.volume.trim().split(' ');
+                                if (parts.length == 2) {
+                                  volumeValueController.text = parts[0];
+                                  setState(() => volumeUnit = parts[1]);
+                                } else {
+                                  volumeValueController.text = record.volume;
+                                }
+                              }
+                              nameFocusNode.requestFocus();
                             })
-                            .catchError((_) {});
+                            .catchError((_) {
+                              nameFocusNode.requestFocus();
+                            });
                         Navigator.of(sheetContext).pop();
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(content: Text('Barcode captured: $value')),
@@ -557,6 +674,8 @@ class _ProductFormState extends State<ProductForm> {
             ),
           TextField(
             controller: barcodeController,
+            focusNode: barcodeFocusNode,
+            onSubmitted: (_) => nameFocusNode.requestFocus(),
             decoration: InputDecoration(
               labelText: 'Barcode',
               border: const OutlineInputBorder(),
@@ -570,16 +689,58 @@ class _ProductFormState extends State<ProductForm> {
           const SizedBox(height: 12),
           TextField(
             controller: nameController,
+            focusNode: nameFocusNode,
+            onSubmitted: (_) => volumeValueFocusNode.requestFocus(),
             decoration: const InputDecoration(
               labelText: 'Product name',
               border: OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                flex: 2,
+                child: TextField(
+                  controller: volumeValueController,
+                  focusNode: volumeValueFocusNode,
+                  keyboardType: TextInputType.number,
+                  onSubmitted: (_) => priceFocusNode.requestFocus(),
+                  decoration: const InputDecoration(
+                    labelText: 'Volume',
+                    border: OutlineInputBorder(),
+                    hintText: 'e.g. 500, 1',
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 1,
+                child: DropdownButtonFormField<String>(
+                  value: volumeUnit,
+                  decoration: const InputDecoration(
+                    labelText: 'Unit',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'ml', child: Text('ml')),
+                    DropdownMenuItem(value: 'kg', child: Text('kg')),
+                    DropdownMenuItem(value: 'gm', child: Text('gm')),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() => volumeUnit = value);
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
           Autocomplete<String>(
             optionsBuilder: (textEditingValue) {
-              if (textEditingValue.text.isEmpty) {
-                return _categories.map((category) => category.name);
+              if (textEditingValue.text.trim().isEmpty) {
+                return const Iterable<String>.empty();
               }
               return _categories
                   .map((category) => category.name)
@@ -587,9 +748,10 @@ class _ProductFormState extends State<ProductForm> {
                     (name) => name.toLowerCase().contains(
                       textEditingValue.text.toLowerCase(),
                     ),
-                  );
+                  )
+                  .take(5);
             },
-            onSelected: (value) => categoryController.text = value,
+            onSelected: (value) => categoryController?.text = value,
             fieldViewBuilder:
                 (context, controller, focusNode, onFieldSubmitted) {
                   categoryController = controller;
@@ -599,50 +761,29 @@ class _ProductFormState extends State<ProductForm> {
                     decoration: const InputDecoration(
                       labelText: 'Category',
                       border: OutlineInputBorder(),
-                      hintText: 'Choose or type a category',
+                      hintText: 'Type to search categories',
                     ),
                   );
                 },
           ),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () async {
-                    final picked = await showDatePicker(
-                      context: context,
-                      initialDate: manufacturingDate,
-                      firstDate: DateTime(2020),
-                      lastDate: DateTime(2100),
-                    );
-                    if (picked != null) {
-                      setState(() => manufacturingDate = picked);
-                    }
-                  },
-                  child: Text(
-                    'Mfg: ${manufacturingDate.toLocal().toString().split(' ').first}',
-                  ),
-                ),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: expiryDate,
+                  firstDate: DateTime.now(),
+                  lastDate: DateTime(2100),
+                );
+                if (picked != null) setState(() => expiryDate = picked);
+              },
+              icon: const Icon(Icons.calendar_month_outlined),
+              label: Text(
+                'Expiry date: ${expiryDate.toLocal().toString().split(' ').first}',
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () async {
-                    final picked = await showDatePicker(
-                      context: context,
-                      initialDate: expiryDate,
-                      firstDate: DateTime.now(),
-                      lastDate: DateTime(2100),
-                    );
-                    if (picked != null) setState(() => expiryDate = picked);
-                  },
-                  child: Text(
-                    'Exp: ${expiryDate.toLocal().toString().split(' ').first}',
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
           const SizedBox(height: 12),
           Row(
@@ -650,7 +791,9 @@ class _ProductFormState extends State<ProductForm> {
               Expanded(
                 child: TextField(
                   controller: priceController,
+                  focusNode: priceFocusNode,
                   keyboardType: TextInputType.number,
+                  onSubmitted: (_) => quantityFocusNode.requestFocus(),
                   decoration: const InputDecoration(
                     labelText: 'Unit price',
                     border: OutlineInputBorder(),
@@ -659,13 +802,58 @@ class _ProductFormState extends State<ProductForm> {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: TextField(
-                  controller: quantityController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Quantity',
-                    border: OutlineInputBorder(),
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Quantity / Units',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 4),
+                    Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.remove),
+                            onPressed: () {
+                              final current = int.tryParse(quantityController.text) ?? 1;
+                              if (current > 1) {
+                                setState(() {
+                                  quantityController.text = (current - 1).toString();
+                                });
+                              }
+                            },
+                          ),
+                          Expanded(
+                            child: TextField(
+                              controller: quantityController,
+                              focusNode: quantityFocusNode,
+                              keyboardType: TextInputType.number,
+                              textAlign: TextAlign.center,
+                              decoration: const InputDecoration(
+                                border: InputBorder.none,
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.add),
+                            onPressed: () {
+                              final current = int.tryParse(quantityController.text) ?? 1;
+                              setState(() {
+                                quantityController.text = (current + 1).toString();
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -694,7 +882,10 @@ class _ProductFormState extends State<ProductForm> {
                           double.tryParse(priceController.text) ?? 0.0;
                       final quantity =
                           int.tryParse(quantityController.text) ?? 1;
-                      final categoryName = categoryController.text.trim();
+                      final categoryName = categoryController?.text.trim() ?? '';
+
+                      final volumeVal = volumeValueController.text.trim();
+                      final volumeStr = volumeVal.isEmpty ? '' : '$volumeVal $volumeUnit';
 
                       final existingProduct = await AppDatabase.instance
                           .findProductByBarcode(barcode);
@@ -705,7 +896,7 @@ class _ProductFormState extends State<ProductForm> {
                               barcode: barcode,
                               name: name,
                               price: price,
-                              volume: quantity.toString(),
+                              volume: volumeStr,
                               createdAt:
                                   existingProduct?.createdAt ??
                                   DateTime.now().toIso8601String(),
@@ -719,14 +910,15 @@ class _ProductFormState extends State<ProductForm> {
                                 categoryName.toLowerCase(),
                           )
                           .firstOrNull;
+                      final now = DateTime.now();
                       await AppDatabase.instance.insertItem(
                         InventoryItemRecord(
                           productId: productId,
                           categoryId: category?.id,
-                          purchaseDate: manufacturingDate.toIso8601String(),
-                          entryDate: DateTime.now().toIso8601String(),
+                          purchaseDate: now.toIso8601String(),
+                          entryDate: now.toIso8601String(),
                           finished: 0,
-                          createdAt: DateTime.now().toIso8601String(),
+                          createdAt: now.toIso8601String(),
                         ),
                       );
 
@@ -734,10 +926,11 @@ class _ProductFormState extends State<ProductForm> {
                         ProductItem(
                           barcode: barcode,
                           name: name,
-                          manufacturingDate: manufacturingDate,
+                          purchaseDate: now,
                           expiryDate: expiryDate,
                           unitPrice: price,
                           quantity: quantity,
+                          volume: volumeStr,
                         ),
                       );
                     },
@@ -757,36 +950,41 @@ class ProductItem {
   ProductItem({
     required this.barcode,
     required this.name,
-    required this.manufacturingDate,
+    required this.purchaseDate,
     required this.expiryDate,
     required this.unitPrice,
     required this.quantity,
+    required this.volume,
   });
 
   final String barcode;
   final String name;
-  final DateTime manufacturingDate;
+  final DateTime purchaseDate;
   final DateTime expiryDate;
   final double unitPrice;
   final int quantity;
+  final String volume;
 
   int get daysUntilExpiry => expiryDate.difference(DateTime.now()).inDays;
 
   Map<String, dynamic> toJson() => {
     'barcode': barcode,
     'name': name,
-    'manufacturingDate': manufacturingDate.toIso8601String(),
+    'purchaseDate': purchaseDate.toIso8601String(),
     'expiryDate': expiryDate.toIso8601String(),
     'unitPrice': unitPrice,
     'quantity': quantity,
+    'volume': volume,
   };
 
   factory ProductItem.fromJson(Map<String, dynamic> json) => ProductItem(
     barcode: json['barcode'] as String,
     name: json['name'] as String,
-    manufacturingDate: DateTime.parse(json['manufacturingDate'] as String),
+    purchaseDate: DateTime.parse(json['purchaseDate'] as String),
     expiryDate: DateTime.parse(json['expiryDate'] as String),
     unitPrice: (json['unitPrice'] as num).toDouble(),
     quantity: json['quantity'] as int,
+    volume: json['volume'] as String? ?? '',
   );
 }
+

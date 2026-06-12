@@ -27,7 +27,19 @@ class AppDatabase {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, 'expired_local.db');
 
-    return openDatabase(path, version: 1, onCreate: _onCreate);
+    return openDatabase(
+      path,
+      version: 2,
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
+      onOpen: (db) async => _seedDefaultCategories(db),
+    );
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await _seedDefaultCategories(db);
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -64,6 +76,10 @@ class AppDatabase {
       )
     ''');
 
+    await _seedDefaultCategories(db);
+  }
+
+  Future<void> _seedDefaultCategories(Database db) async {
     final defaultCategories = [
       {'name': 'Dairy', 'createdAt': '2026-06-12T00:00:00.000'},
       {'name': 'Bakery', 'createdAt': '2026-06-12T00:00:00.000'},
@@ -71,6 +87,12 @@ class AppDatabase {
       {'name': 'Snacks', 'createdAt': '2026-06-12T00:00:00.000'},
       {'name': 'Frozen', 'createdAt': '2026-06-12T00:00:00.000'},
       {'name': 'Household', 'createdAt': '2026-06-12T00:00:00.000'},
+      {'name': 'Grains', 'createdAt': '2026-06-12T00:00:00.000'},
+      {'name': 'Meat & Seafood', 'createdAt': '2026-06-12T00:00:00.000'},
+      {'name': 'Produce', 'createdAt': '2026-06-12T00:00:00.000'},
+      {'name': 'Canned Goods', 'createdAt': '2026-06-12T00:00:00.000'},
+      {'name': 'Pantry', 'createdAt': '2026-06-12T00:00:00.000'},
+      {'name': 'Deli', 'createdAt': '2026-06-12T00:00:00.000'},
     ];
 
     for (final category in defaultCategories) {
@@ -94,6 +116,7 @@ class AppDatabase {
   }
 
   Future<List<CategoryRecord>> getCategories() async => _withRetry((db) async {
+    await _seedDefaultCategories(db);
     final rows = await db.query('category', orderBy: 'name ASC');
     return rows.map(CategoryRecord.fromMap).toList();
   });
@@ -125,22 +148,22 @@ class AppDatabase {
         return ProductRecord.fromMap(rows.first);
       });
 
-  Future<int> upsertProduct(ProductRecord record) async =>
-      _withRetry((db) async {
-        final existing = await findProductByBarcode(record.barcode);
+  Future<int> upsertProduct(ProductRecord record) async {
+    final existing = await findProductByBarcode(record.barcode);
+    return _withRetry((db) async {
+      if (existing == null) {
+        return db.insert('product', record.toMap());
+      }
 
-        if (existing == null) {
-          return db.insert('product', record.toMap());
-        }
-
-        await db.update(
-          'product',
-          record.toMap(),
-          where: 'id = ?',
-          whereArgs: [existing.id],
-        );
-        return existing.id!;
-      });
+      await db.update(
+        'product',
+        record.toMap(),
+        where: 'id = ?',
+        whereArgs: [existing.id],
+      );
+      return existing.id!;
+    });
+  }
 
   Future<int> insertItem(InventoryItemRecord record) async =>
       _withRetry((db) async {
@@ -170,7 +193,7 @@ class AppDatabase {
   }
 
   Future<void> resetDatabaseFiles() async {
-    _database = null;
+    await close();
     final dbPath = await getDatabasesPath();
     await deleteDatabase(join(dbPath, 'expired_local.db'));
   }
