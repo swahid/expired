@@ -19,6 +19,7 @@ class ExpiredApp extends StatelessWidget {
         useMaterial3: true,
       ),
       home: const ProductDashboardPage(),
+      debugShowCheckedModeBanner: false,
     );
   }
 }
