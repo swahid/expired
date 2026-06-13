@@ -1,9 +1,12 @@
 import 'package:expired/database_helper.dart';
+import 'package:expired/notification_service.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await NotificationService.instance.init();
   runApp(const ExpiredApp());
 }
 
@@ -12,27 +15,27 @@ class ExpiredApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const _slate900 = Color(0xFF0F172A);
-    const _slate700 = Color(0xFF334155);
-    const _slate100 = Color(0xFFF1F5F9);
-    const _indigo500 = Color(0xFF6366F1);
+    const slate900 = Color(0xFF1E2233); // logo wordmark navy
+    const slate700 = Color(0xFF475569);
+    const slate100 = Color(0xFFF6F7FB);
+    const indigo500 = Color(0xFFFF5A3C); // logo coral/orange-red
 
     return MaterialApp(
       title: 'Expired',
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: _indigo500,
+          seedColor: indigo500,
           brightness: Brightness.light,
         ),
-        scaffoldBackgroundColor: _slate100,
+        scaffoldBackgroundColor: slate100,
         appBarTheme: const AppBarTheme(
-          backgroundColor: _slate100,
-          foregroundColor: _slate900,
+          backgroundColor: slate100,
+          foregroundColor: slate900,
           elevation: 0,
           centerTitle: false,
           titleTextStyle: TextStyle(
-            color: _slate900,
+            color: slate900,
             fontSize: 22,
             fontWeight: FontWeight.w700,
             letterSpacing: -0.5,
@@ -45,9 +48,15 @@ class ExpiredApp extends StatelessWidget {
             borderRadius: BorderRadius.circular(16),
           ),
         ),
+        bottomSheetTheme: const BottomSheetThemeData(
+          backgroundColor: Colors.white,
+          modalBackgroundColor: Colors.white,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+        ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
-          fillColor: _slate100,
+          fillColor: slate100,
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
             borderSide: BorderSide.none,
@@ -58,20 +67,23 @@ class ExpiredApp extends StatelessWidget {
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: _indigo500, width: 1.5),
+            borderSide: const BorderSide(color: indigo500, width: 1.5),
           ),
-          labelStyle: TextStyle(color: _slate700, fontSize: 14),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          labelStyle: TextStyle(color: slate700, fontSize: 14),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 14,
+          ),
         ),
         textTheme: const TextTheme(
           titleLarge: TextStyle(
             fontSize: 20,
             fontWeight: FontWeight.w700,
-            color: _slate900,
+            color: slate900,
             letterSpacing: -0.3,
           ),
-          bodyMedium: TextStyle(color: _slate700, fontSize: 14),
-          bodySmall: TextStyle(color: _slate700, fontSize: 12),
+          bodyMedium: TextStyle(color: slate700, fontSize: 14),
+          bodySmall: TextStyle(color: slate700, fontSize: 12),
         ),
       ),
       home: const ProductDashboardPage(),
@@ -97,6 +109,12 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
   void initState() {
     super.initState();
     _loadProducts();
+    _initNotifications();
+  }
+
+  Future<void> _initNotifications() async {
+    await NotificationService.instance.requestPermission();
+    await NotificationService.instance.scheduleDailyChecks();
   }
 
   Future<void> _loadProducts() async {
@@ -111,9 +129,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
               (record) => ProductItem(
                 barcode: record.barcode,
                 name: record.name,
-                purchaseDate: DateTime.now().subtract(
-                  const Duration(days: 30),
-                ),
+                purchaseDate: DateTime.now().subtract(const Duration(days: 30)),
                 expiryDate: DateTime.now().add(const Duration(days: 60)),
                 unitPrice: record.price,
                 quantity: 1,
@@ -203,10 +219,10 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
         ? _products.where((p) => p.daysUntilExpiry <= 7).toList()
         : List<ProductItem>.from(_products);
 
-    const indigo = Color(0xFF6366F1);
+    const indigo = Color(0xFFFF5A3C);
     const amber = Color(0xFFF59E0B);
-    const slate900 = Color(0xFF0F172A);
-    const slate500 = Color(0xFF64748B);
+    const slate900 = Color(0xFF1E2233);
+    const slate500 = Color(0xFF6B7280);
 
     return Scaffold(
       appBar: AppBar(
@@ -237,11 +253,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
               padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
               child: Text(
                 'Track products before they expire.',
-                style: TextStyle(
-                  color: slate500,
-                  fontSize: 14,
-                  height: 1.4,
-                ),
+                style: TextStyle(color: slate500, fontSize: 14, height: 1.4),
               ),
             ),
             // stat cards
@@ -256,7 +268,8 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                       accent: indigo,
                       icon: Icons.inventory_2_rounded,
                       isActive: _filter == _DashboardFilter.all,
-                      onTap: () => setState(() => _filter = _DashboardFilter.all),
+                      onTap: () =>
+                          setState(() => _filter = _DashboardFilter.all),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -267,7 +280,9 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                       accent: amber,
                       icon: Icons.warning_amber_rounded,
                       isActive: _filter == _DashboardFilter.expiringSoon,
-                      onTap: () => setState(() => _filter = _DashboardFilter.expiringSoon),
+                      onTap: () => setState(
+                        () => _filter = _DashboardFilter.expiringSoon,
+                      ),
                     ),
                   ),
                 ],
@@ -293,7 +308,8 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                   const Spacer(),
                   if (_filter == _DashboardFilter.expiringSoon)
                     GestureDetector(
-                      onTap: () => setState(() => _filter = _DashboardFilter.all),
+                      onTap: () =>
+                          setState(() => _filter = _DashboardFilter.all),
                       child: Text(
                         'Show all',
                         style: TextStyle(
@@ -357,7 +373,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openProductSheet(),
-        backgroundColor: const Color(0xFF6366F1),
+        backgroundColor: const Color(0xFFFF5A3C),
         foregroundColor: Colors.white,
         elevation: 0,
         icon: const Icon(Icons.qr_code_scanner_rounded, size: 20),
@@ -438,7 +454,7 @@ class _SummaryCard extends StatelessWidget {
               style: TextStyle(
                 fontSize: 28,
                 fontWeight: FontWeight.w800,
-                color: isActive ? Colors.white : const Color(0xFF0F172A),
+                color: isActive ? Colors.white : const Color(0xFF1E2233),
                 height: 1,
                 letterSpacing: -1,
               ),
@@ -451,7 +467,7 @@ class _SummaryCard extends StatelessWidget {
                 fontWeight: FontWeight.w500,
                 color: isActive
                     ? Colors.white.withValues(alpha: 0.8)
-                    : const Color(0xFF64748B),
+                    : const Color(0xFF6B7280),
               ),
             ),
           ],
@@ -480,13 +496,13 @@ class _ProductCard extends StatelessWidget {
     final accentColor = critical
         ? const Color(0xFFEF4444)
         : warning
-            ? const Color(0xFFF59E0B)
-            : const Color(0xFF10B981);
+        ? const Color(0xFFF59E0B)
+        : const Color(0xFF10B981);
     final expiryLabel = days < 0
         ? 'Expired'
         : days == 0
-            ? 'Today'
-            : '$days d left';
+        ? 'Today'
+        : '$days d left';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -542,7 +558,7 @@ class _ProductCard extends StatelessWidget {
                               style: const TextStyle(
                                 fontWeight: FontWeight.w700,
                                 fontSize: 14,
-                                color: Color(0xFF0F172A),
+                                color: Color(0xFF1E2233),
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
@@ -552,22 +568,19 @@ class _ProductCard extends StatelessWidget {
                                 product.volume,
                                 style: const TextStyle(
                                   fontSize: 11,
-                                  color: Color(0xFF64748B),
+                                  color: Color(0xFF6B7280),
                                 ),
                               ),
                             const SizedBox(height: 4),
                             Row(
                               children: [
-                                _Tag(
-                                  label: expiryLabel,
-                                  color: accentColor,
-                                ),
+                                _Tag(label: expiryLabel, color: accentColor),
                                 const SizedBox(width: 6),
                                 Text(
                                   'Qty ${product.quantity}  ·  ৳${product.unitPrice.toStringAsFixed(0)}',
                                   style: const TextStyle(
                                     fontSize: 11,
-                                    color: Color(0xFF64748B),
+                                    color: Color(0xFF6B7280),
                                   ),
                                 ),
                               ],
@@ -581,7 +594,7 @@ class _ProductCard extends StatelessWidget {
                         children: [
                           _ActionBtn(
                             icon: Icons.edit_rounded,
-                            color: const Color(0xFF6366F1),
+                            color: const Color(0xFFFF5A3C),
                             onPressed: onEdit,
                             tooltip: 'Edit',
                           ),
@@ -875,9 +888,9 @@ class _ProductFormState extends State<ProductForm> {
 
   @override
   Widget build(BuildContext context) {
-    const indigo = Color(0xFF6366F1);
-    const slate900 = Color(0xFF0F172A);
-    const slate500 = Color(0xFF64748B);
+    const indigo = Color(0xFFFF5A3C);
+    const slate900 = Color(0xFF1E2233);
+    const slate500 = Color(0xFF6B7280);
 
     return SingleChildScrollView(
       child: Column(
@@ -975,7 +988,7 @@ class _ProductFormState extends State<ProductForm> {
               Expanded(
                 flex: 1,
                 child: DropdownButtonFormField<String>(
-                  value: volumeUnit,
+                  initialValue: volumeUnit,
                   decoration: const InputDecoration(
                     labelText: 'Unit',
                     border: OutlineInputBorder(),
@@ -1079,10 +1092,12 @@ class _ProductFormState extends State<ProductForm> {
                           IconButton(
                             icon: const Icon(Icons.remove),
                             onPressed: () {
-                              final current = int.tryParse(quantityController.text) ?? 1;
+                              final current =
+                                  int.tryParse(quantityController.text) ?? 1;
                               if (current > 1) {
                                 setState(() {
-                                  quantityController.text = (current - 1).toString();
+                                  quantityController.text = (current - 1)
+                                      .toString();
                                 });
                               }
                             },
@@ -1102,9 +1117,11 @@ class _ProductFormState extends State<ProductForm> {
                           IconButton(
                             icon: const Icon(Icons.add),
                             onPressed: () {
-                              final current = int.tryParse(quantityController.text) ?? 1;
+                              final current =
+                                  int.tryParse(quantityController.text) ?? 1;
                               setState(() {
-                                quantityController.text = (current + 1).toString();
+                                quantityController.text = (current + 1)
+                                    .toString();
                               });
                             },
                           ),
@@ -1121,7 +1138,7 @@ class _ProductFormState extends State<ProductForm> {
             width: double.infinity,
             child: FilledButton.icon(
               style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF6366F1),
+                backgroundColor: const Color(0xFFFF5A3C),
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(
@@ -1154,10 +1171,13 @@ class _ProductFormState extends State<ProductForm> {
                           double.tryParse(priceController.text) ?? 0.0;
                       final quantity =
                           int.tryParse(quantityController.text) ?? 1;
-                      final categoryName = categoryController?.text.trim() ?? '';
+                      final categoryName =
+                          categoryController?.text.trim() ?? '';
 
                       final volumeVal = volumeValueController.text.trim();
-                      final volumeStr = volumeVal.isEmpty ? '' : '$volumeVal $volumeUnit';
+                      final volumeStr = volumeVal.isEmpty
+                          ? ''
+                          : '$volumeVal $volumeUnit';
 
                       final existingProduct = await AppDatabase.instance
                           .findProductByBarcode(barcode);
@@ -1189,6 +1209,7 @@ class _ProductFormState extends State<ProductForm> {
                           categoryId: category?.id,
                           purchaseDate: now.toIso8601String(),
                           entryDate: now.toIso8601String(),
+                          expiryDate: expiryDate.toIso8601String(),
                           finished: 0,
                           createdAt: now.toIso8601String(),
                         ),
@@ -1259,4 +1280,3 @@ class ProductItem {
     volume: json['volume'] as String? ?? '',
   );
 }
-

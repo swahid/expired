@@ -39,6 +39,10 @@ class AppDatabase {
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       await _seedDefaultCategories(db);
+      // Add expiryDate column to items table
+      await db.execute(
+        'ALTER TABLE items ADD COLUMN expiryDate TEXT NOT NULL DEFAULT ""',
+      );
     }
   }
 
@@ -69,6 +73,7 @@ class AppDatabase {
         categoryId INTEGER,
         purchaseDate TEXT NOT NULL,
         entryDate TEXT NOT NULL,
+        expiryDate TEXT NOT NULL DEFAULT "",
         finished INTEGER NOT NULL DEFAULT 0,
         createdAt TEXT NOT NULL,
         FOREIGN KEY (productId) REFERENCES product(id) ON DELETE CASCADE,
@@ -175,9 +180,30 @@ class AppDatabase {
     return rows.map(InventoryItemRecord.fromMap).toList();
   });
 
+  /// Returns items expiring within [withinDays] days (and not yet finished).
+  Future<List<Map<String, dynamic>>> getExpiringItems({
+    int withinDays = 7,
+  }) async =>
+      _withRetry((db) async {
+        final now = DateTime.now();
+        final cutoff = now.add(Duration(days: withinDays));
+        final rows = await db.rawQuery(
+          '''
+          SELECT p.name, i.expiryDate
+          FROM items i
+          JOIN product p ON p.id = i.productId
+          WHERE i.finished = 0
+            AND i.expiryDate != ""
+            AND i.expiryDate <= ?
+          ORDER BY i.expiryDate ASC
+          ''',
+          [cutoff.toIso8601String()],
+        );
+        return rows;
+      });
+
   Future<void> deleteProduct(int productId) async => _withRetry((db) async {
     await db.delete('items', where: 'productId = ?', whereArgs: [productId]);
-    await db.delete('product', where: 'id = ?', whereArgs: [productId]);
   });
 
   Future<void> close() async {
@@ -260,6 +286,7 @@ class InventoryItemRecord {
     this.categoryId,
     required this.purchaseDate,
     required this.entryDate,
+    required this.expiryDate,
     required this.finished,
     required this.createdAt,
   });
@@ -269,6 +296,7 @@ class InventoryItemRecord {
   final int? categoryId;
   final String purchaseDate;
   final String entryDate;
+  final String expiryDate;
   final int finished;
   final String createdAt;
 
@@ -278,6 +306,7 @@ class InventoryItemRecord {
     'categoryId': categoryId,
     'purchaseDate': purchaseDate,
     'entryDate': entryDate,
+    'expiryDate': expiryDate,
     'finished': finished,
     'createdAt': createdAt,
   }..removeWhere((key, value) => key == 'id' && value == null);
@@ -289,6 +318,7 @@ class InventoryItemRecord {
         categoryId: map['categoryId'] as int?,
         purchaseDate: map['purchaseDate'] as String,
         entryDate: map['entryDate'] as String,
+        expiryDate: map['expiryDate'] as String? ?? '',
         finished: map['finished'] as int? ?? 0,
         createdAt: map['createdAt'] as String,
       );
