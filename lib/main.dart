@@ -678,7 +678,7 @@ class _ProductFormState extends State<ProductForm> {
   // FocusNodes to control next field and skip category autoexpand
   late final FocusNode barcodeFocusNode;
   late final FocusNode nameFocusNode;
-  late final FocusNode categoryFocusNode;
+  FocusNode? categoryFocusNode;
   late final FocusNode priceFocusNode;
   late final FocusNode quantityFocusNode;
 
@@ -700,11 +700,11 @@ class _ProductFormState extends State<ProductForm> {
         product?.purchaseDate ??
         DateTime.now().subtract(const Duration(days: 30));
     expiryDate =
-        product?.expiryDate ?? DateTime.now().add(const Duration(days: 60));
+        product?.expiryDate ?? DateTime.now().add(const Duration(days: 7));
 
     barcodeFocusNode = FocusNode();
     nameFocusNode = FocusNode();
-    categoryFocusNode = FocusNode();
+    // categoryFocusNode is managed by Autocomplete
     priceFocusNode = FocusNode();
     quantityFocusNode = FocusNode();
   }
@@ -736,7 +736,7 @@ class _ProductFormState extends State<ProductForm> {
     quantityController.dispose();
     barcodeFocusNode.dispose();
     nameFocusNode.dispose();
-    categoryFocusNode.dispose();
+    // categoryFocusNode is disposed by Autocomplete
     priceFocusNode.dispose();
     quantityFocusNode.dispose();
     scannerController.dispose();
@@ -916,6 +916,28 @@ class _ProductFormState extends State<ProductForm> {
             ),
           ),
           const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () async {
+                final picked = await showDatePicker(
+                  context: context,
+                  initialDate: expiryDate,
+                  firstDate: DateTime.now(),
+                  lastDate: DateTime(2100),
+                );
+                if (picked != null) {
+                  setState(() => expiryDate = picked);
+                  categoryFocusNode?.requestFocus();
+                }
+              },
+              icon: const Icon(Icons.calendar_month_outlined),
+              label: Text(
+                'Expiry date: ${expiryDate.toLocal().toString().split(' ').first}',
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
 
           Autocomplete<String>(
             optionsBuilder: (textEditingValue) {
@@ -935,6 +957,7 @@ class _ProductFormState extends State<ProductForm> {
             fieldViewBuilder:
                 (context, controller, focusNode, onFieldSubmitted) {
                   categoryController = controller;
+                  categoryFocusNode = focusNode;
                   return TextField(
                     controller: controller,
                     focusNode: focusNode,
@@ -945,25 +968,6 @@ class _ProductFormState extends State<ProductForm> {
                     ),
                   );
                 },
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: () async {
-                final picked = await showDatePicker(
-                  context: context,
-                  initialDate: expiryDate,
-                  firstDate: DateTime.now(),
-                  lastDate: DateTime(2100),
-                );
-                if (picked != null) setState(() => expiryDate = picked);
-              },
-              icon: const Icon(Icons.calendar_month_outlined),
-              label: Text(
-                'Expiry date: ${expiryDate.toLocal().toString().split(' ').first}',
-              ),
-            ),
           ),
           const SizedBox(height: 12),
           Row(

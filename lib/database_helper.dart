@@ -29,7 +29,7 @@ class AppDatabase {
 
     return openDatabase(
       path,
-      version: 2,
+      version: 1,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
       onOpen: (db) async => _seedDefaultCategories(db),
@@ -85,18 +85,21 @@ class AppDatabase {
 
   Future<void> _seedDefaultCategories(Database db) async {
     final defaultCategories = [
-      {'name': 'Dairy', 'createdAt': '2026-06-12T00:00:00.000'},
-      {'name': 'Bakery', 'createdAt': '2026-06-12T00:00:00.000'},
-      {'name': 'Beverages', 'createdAt': '2026-06-12T00:00:00.000'},
-      {'name': 'Snacks', 'createdAt': '2026-06-12T00:00:00.000'},
-      {'name': 'Frozen', 'createdAt': '2026-06-12T00:00:00.000'},
-      {'name': 'Household', 'createdAt': '2026-06-12T00:00:00.000'},
-      {'name': 'Grains', 'createdAt': '2026-06-12T00:00:00.000'},
-      {'name': 'Meat & Seafood', 'createdAt': '2026-06-12T00:00:00.000'},
-      {'name': 'Produce', 'createdAt': '2026-06-12T00:00:00.000'},
-      {'name': 'Canned Goods', 'createdAt': '2026-06-12T00:00:00.000'},
-      {'name': 'Pantry', 'createdAt': '2026-06-12T00:00:00.000'},
-      {'name': 'Deli', 'createdAt': '2026-06-12T00:00:00.000'},
+      {'name': 'Food', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Dairy', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Meat & Seafood', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Fruits & Vegetables', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Bakery', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Beverages', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Frozen Foods', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Snacks', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Medicine', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Supplements', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Cosmetics', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Baby Care', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Pet Care', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Household', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Other', 'createdAt': '2026-06-13T00:00:00.000'},
     ];
 
     for (final category in defaultCategories) {
@@ -201,12 +204,11 @@ class AppDatabase {
   /// Returns items expiring within [withinDays] days (and not yet finished).
   Future<List<Map<String, dynamic>>> getExpiringItems({
     int withinDays = 7,
-  }) async =>
-      _withRetry((db) async {
-        final now = DateTime.now();
-        final cutoff = now.add(Duration(days: withinDays));
-        final rows = await db.rawQuery(
-          '''
+  }) async => _withRetry((db) async {
+    final now = DateTime.now();
+    final cutoff = now.add(Duration(days: withinDays));
+    final rows = await db.rawQuery(
+      '''
           SELECT p.name, i.expiryDate
           FROM items i
           JOIN product p ON p.id = i.productId
@@ -215,13 +217,20 @@ class AppDatabase {
             AND i.expiryDate <= ?
           ORDER BY i.expiryDate ASC
           ''',
-          [cutoff.toIso8601String()],
-        );
-        return rows;
-      });
+      [cutoff.toIso8601String()],
+    );
+    return rows;
+  });
 
-  Future<void> deleteItemsByProductAndExpiry(int productId, String expiryDate) async => _withRetry((db) async {
-    await db.delete('items', where: 'productId = ? AND expiryDate = ?', whereArgs: [productId, expiryDate]);
+  Future<void> deleteItemsByProductAndExpiry(
+    int productId,
+    String expiryDate,
+  ) async => _withRetry((db) async {
+    await db.delete(
+      'items',
+      where: 'productId = ? AND expiryDate = ?',
+      whereArgs: [productId, expiryDate],
+    );
   });
 
   Future<void> close() async {
