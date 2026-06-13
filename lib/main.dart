@@ -129,8 +129,12 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
               (item) => ProductItem(
                 barcode: item['barcode'] as String,
                 name: item['name'] as String,
-                purchaseDate: DateTime.tryParse(item['purchaseDate'] as String? ?? '') ?? DateTime.now().subtract(const Duration(days: 30)),
-                expiryDate: DateTime.tryParse(item['expiryDate'] as String? ?? '') ?? DateTime.now().add(const Duration(days: 60)),
+                purchaseDate:
+                    DateTime.tryParse(item['purchaseDate'] as String? ?? '') ??
+                    DateTime.now().subtract(const Duration(days: 30)),
+                expiryDate:
+                    DateTime.tryParse(item['expiryDate'] as String? ?? '') ??
+                    DateTime.now().add(const Duration(days: 60)),
                 unitPrice: (item['price'] as num).toDouble(),
                 quantity: item['quantity'] as int,
               ),
@@ -142,8 +146,6 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
       setState(() => _products.clear());
     }
   }
-
-
 
   Future<void> _openProductSheet({ProductItem? product, int? index}) async {
     final navigator = Navigator.of(context);
@@ -983,11 +985,6 @@ class _ProductFormState extends State<ProductForm> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Quantity / Units',
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 4),
                     Container(
                       decoration: BoxDecoration(
                         border: Border.all(color: Colors.grey),
@@ -1097,10 +1094,11 @@ class _ProductFormState extends State<ProductForm> {
                           );
 
                       if (widget.product != null) {
-                        await AppDatabase.instance.deleteItemsByProductAndExpiry(
-                          productId,
-                          widget.product!.expiryDate.toIso8601String(),
-                        );
+                        await AppDatabase.instance
+                            .deleteItemsByProductAndExpiry(
+                              productId,
+                              widget.product!.expiryDate.toIso8601String(),
+                            );
                       }
                       final category = _categories
                           .where(
