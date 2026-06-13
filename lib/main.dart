@@ -3,6 +3,7 @@ import 'package:expired/notification_service.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -192,6 +193,150 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
     );
   }
 
+  void _showAboutMeDialog() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) {
+        const slate900 = Color(0xFF1E2233);
+        const slate500 = Color(0xFF6B7280);
+        const indigo = Color(0xFFFF5A3C);
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // drag handle
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade300,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                // app icon + name
+                Row(
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: indigo.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: const Icon(
+                        Icons.inventory_2_rounded,
+                        color: indigo,
+                        size: 26,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    const Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Expired',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: slate900,
+                            letterSpacing: -0.3,
+                          ),
+                        ),
+                        Text(
+                          'Version 1.0.0',
+                          style: TextStyle(fontSize: 12, color: slate500),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                // description
+                const Text(
+                  'Expired helps you keep track of the products in your home '
+                  'and their expiry dates. Scan a barcode or add items '
+                  'manually, and get notified before they expire so nothing '
+                  'goes to waste.',
+                  style: TextStyle(fontSize: 14, color: slate500, height: 1.5),
+                ),
+                const SizedBox(height: 20),
+                const Divider(height: 1),
+                const SizedBox(height: 4),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.language, color: slate900),
+                  title: const Text('App Website'),
+                  trailing: const Icon(
+                    Icons.open_in_new,
+                    size: 18,
+                    color: slate500,
+                  ),
+                  onTap: () =>
+                      launchUrl(Uri.parse('https://expiredapp.tiiny.site/')),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(
+                    Icons.privacy_tip_outlined,
+                    color: slate900,
+                  ),
+                  title: const Text('Privacy Policy'),
+                  trailing: const Icon(
+                    Icons.open_in_new,
+                    size: 18,
+                    color: slate500,
+                  ),
+                  onTap: () => launchUrl(
+                    Uri.parse(
+                      'https://expiredapp.tiiny.site/privacy-policy.html',
+                    ),
+                  ),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(
+                    Icons.description_outlined,
+                    color: slate900,
+                  ),
+                  title: const Text('Terms of Service'),
+                  trailing: const Icon(
+                    Icons.open_in_new,
+                    size: 18,
+                    color: slate500,
+                  ),
+                  onTap: () => launchUrl(
+                    Uri.parse(
+                      'https://expiredapp.tiiny.site/terms-and-conditions.html',
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Center(
+                  child: Text(
+                    '© ${DateTime.now().year} Expired. All rights reserved.',
+                    style: const TextStyle(fontSize: 11, color: slate500),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final expiringSoon = _products
@@ -211,6 +356,20 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
       appBar: AppBar(
         title: const Text('Expired'),
         actions: [
+          Container(
+            margin: const EdgeInsets.only(right: 8),
+            child: IconButton(
+              onPressed: _showAboutMeDialog,
+              icon: const Icon(Icons.info_outline, size: 22),
+              style: IconButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: slate900,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ),
           Container(
             margin: const EdgeInsets.only(right: 8),
             child: IconButton(
