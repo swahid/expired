@@ -119,21 +119,20 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
 
   Future<void> _loadProducts() async {
     try {
-      final records = await AppDatabase.instance.getProducts();
+      final items = await AppDatabase.instance.getDashboardItems();
       if (!mounted) return;
       setState(() {
         _products
           ..clear()
           ..addAll(
-            records.map(
-              (record) => ProductItem(
-                barcode: record.barcode,
-                name: record.name,
-                purchaseDate: DateTime.now().subtract(const Duration(days: 30)),
-                expiryDate: DateTime.now().add(const Duration(days: 60)),
-                unitPrice: record.price,
-                quantity: 1,
-                volume: record.volume,
+            items.map(
+              (item) => ProductItem(
+                barcode: item['barcode'] as String,
+                name: item['name'] as String,
+                purchaseDate: DateTime.tryParse(item['purchaseDate'] as String? ?? '') ?? DateTime.now().subtract(const Duration(days: 30)),
+                expiryDate: DateTime.tryParse(item['expiryDate'] as String? ?? '') ?? DateTime.now().add(const Duration(days: 60)),
+                unitPrice: (item['price'] as num).toDouble(),
+                quantity: item['quantity'] as int,
               ),
             ),
           );
@@ -144,19 +143,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
     }
   }
 
-  Future<void> _saveProducts() async {
-    for (final product in _products) {
-      await AppDatabase.instance.upsertProduct(
-        ProductRecord(
-          barcode: product.barcode,
-          name: product.name,
-          price: product.unitPrice,
-          volume: product.volume,
-          createdAt: DateTime.now().toIso8601String(),
-        ),
-      );
-    }
-  }
+
 
   Future<void> _openProductSheet({ProductItem? product, int? index}) async {
     final navigator = Navigator.of(context);
@@ -178,15 +165,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
           child: ProductForm(
             product: product,
             onSave: (updatedProduct) async {
-              setState(() {
-                if (index == null) {
-                  _products.add(updatedProduct);
-                } else {
-                  _products[index] = updatedProduct;
-                }
-                _products.sort((a, b) => a.expiryDate.compareTo(b.expiryDate));
-              });
-              await _saveProducts();
+              await _loadProducts();
               if (mounted) {
                 navigator.pop();
               }
@@ -202,10 +181,12 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
     setState(() {
       _products.removeAt(index);
     });
-    await AppDatabase.instance.deleteProduct(
-      await AppDatabase.instance
-          .findProductByBarcode(product.barcode)
-          .then((value) => value?.id ?? -1),
+    final pId = await AppDatabase.instance
+        .findProductByBarcode(product.barcode)
+        .then((value) => value?.id ?? -1);
+    await AppDatabase.instance.deleteItemsByProductAndExpiry(
+      pId,
+      product.expiryDate.toIso8601String(),
     );
   }
 
@@ -563,14 +544,6 @@ class _ProductCard extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
-                            if (product.volume.isNotEmpty)
-                              Text(
-                                product.volume,
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: Color(0xFF6B7280),
-                                ),
-                              ),
                             const SizedBox(height: 4),
                             Row(
                               children: [
@@ -691,8 +664,7 @@ class _ProductFormState extends State<ProductForm> {
   late final TextEditingController nameController;
   late final TextEditingController priceController;
   late final TextEditingController quantityController;
-  late final TextEditingController volumeValueController;
-  String volumeUnit = 'ml';
+  // Volume variables removed
   TextEditingController? categoryController;
   final MobileScannerController scannerController = MobileScannerController();
   List<CategoryRecord> _categories = const [];
@@ -704,7 +676,6 @@ class _ProductFormState extends State<ProductForm> {
   // FocusNodes to control next field and skip category autoexpand
   late final FocusNode barcodeFocusNode;
   late final FocusNode nameFocusNode;
-  late final FocusNode volumeValueFocusNode;
   late final FocusNode categoryFocusNode;
   late final FocusNode priceFocusNode;
   late final FocusNode quantityFocusNode;
@@ -723,21 +694,6 @@ class _ProductFormState extends State<ProductForm> {
       text: product?.quantity.toString() ?? '1',
     );
 
-    final productVolume = product?.volume ?? '';
-    String volValue = '';
-    String volUnit = 'ml';
-    if (productVolume.isNotEmpty) {
-      final parts = productVolume.trim().split(' ');
-      if (parts.length == 2) {
-        volValue = parts[0];
-        volUnit = parts[1];
-      } else {
-        volValue = productVolume;
-      }
-    }
-    volumeValueController = TextEditingController(text: volValue);
-    volumeUnit = ['ml', 'kg', 'gm'].contains(volUnit) ? volUnit : 'ml';
-
     purchaseDate =
         product?.purchaseDate ??
         DateTime.now().subtract(const Duration(days: 30));
@@ -746,7 +702,6 @@ class _ProductFormState extends State<ProductForm> {
 
     barcodeFocusNode = FocusNode();
     nameFocusNode = FocusNode();
-    volumeValueFocusNode = FocusNode();
     categoryFocusNode = FocusNode();
     priceFocusNode = FocusNode();
     quantityFocusNode = FocusNode();
@@ -777,10 +732,8 @@ class _ProductFormState extends State<ProductForm> {
     nameController.dispose();
     priceController.dispose();
     quantityController.dispose();
-    volumeValueController.dispose();
     barcodeFocusNode.dispose();
     nameFocusNode.dispose();
-    volumeValueFocusNode.dispose();
     categoryFocusNode.dispose();
     priceFocusNode.dispose();
     quantityFocusNode.dispose();
@@ -852,13 +805,6 @@ class _ProductFormState extends State<ProductForm> {
                               if (record != null) {
                                 nameController.text = record.name;
                                 priceController.text = record.price.toString();
-                                final parts = record.volume.trim().split(' ');
-                                if (parts.length == 2) {
-                                  volumeValueController.text = parts[0];
-                                  setState(() => volumeUnit = parts[1]);
-                                } else {
-                                  volumeValueController.text = record.volume;
-                                }
                               }
                               nameFocusNode.requestFocus();
                             })
@@ -961,53 +907,14 @@ class _ProductFormState extends State<ProductForm> {
           TextField(
             controller: nameController,
             focusNode: nameFocusNode,
-            onSubmitted: (_) => volumeValueFocusNode.requestFocus(),
+            onSubmitted: (_) => priceFocusNode.requestFocus(),
             decoration: const InputDecoration(
               labelText: 'Product name',
               border: OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                flex: 2,
-                child: TextField(
-                  controller: volumeValueController,
-                  focusNode: volumeValueFocusNode,
-                  keyboardType: TextInputType.number,
-                  onSubmitted: (_) => priceFocusNode.requestFocus(),
-                  decoration: const InputDecoration(
-                    labelText: 'Volume',
-                    border: OutlineInputBorder(),
-                    hintText: 'e.g. 500, 1',
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                flex: 1,
-                child: DropdownButtonFormField<String>(
-                  initialValue: volumeUnit,
-                  decoration: const InputDecoration(
-                    labelText: 'Unit',
-                    border: OutlineInputBorder(),
-                  ),
-                  items: const [
-                    DropdownMenuItem(value: 'ml', child: Text('ml')),
-                    DropdownMenuItem(value: 'kg', child: Text('kg')),
-                    DropdownMenuItem(value: 'gm', child: Text('gm')),
-                  ],
-                  onChanged: (value) {
-                    if (value != null) {
-                      setState(() => volumeUnit = value);
-                    }
-                  },
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
+
           Autocomplete<String>(
             optionsBuilder: (textEditingValue) {
               if (textEditingValue.text.trim().isEmpty) {
@@ -1174,11 +1081,6 @@ class _ProductFormState extends State<ProductForm> {
                       final categoryName =
                           categoryController?.text.trim() ?? '';
 
-                      final volumeVal = volumeValueController.text.trim();
-                      final volumeStr = volumeVal.isEmpty
-                          ? ''
-                          : '$volumeVal $volumeUnit';
-
                       final existingProduct = await AppDatabase.instance
                           .findProductByBarcode(barcode);
                       final productId = await AppDatabase.instance
@@ -1188,13 +1090,18 @@ class _ProductFormState extends State<ProductForm> {
                               barcode: barcode,
                               name: name,
                               price: price,
-                              volume: volumeStr,
                               createdAt:
                                   existingProduct?.createdAt ??
                                   DateTime.now().toIso8601String(),
                             ),
                           );
 
+                      if (widget.product != null) {
+                        await AppDatabase.instance.deleteItemsByProductAndExpiry(
+                          productId,
+                          widget.product!.expiryDate.toIso8601String(),
+                        );
+                      }
                       final category = _categories
                           .where(
                             (item) =>
@@ -1203,17 +1110,19 @@ class _ProductFormState extends State<ProductForm> {
                           )
                           .firstOrNull;
                       final now = DateTime.now();
-                      await AppDatabase.instance.insertItem(
-                        InventoryItemRecord(
-                          productId: productId,
-                          categoryId: category?.id,
-                          purchaseDate: now.toIso8601String(),
-                          entryDate: now.toIso8601String(),
-                          expiryDate: expiryDate.toIso8601String(),
-                          finished: 0,
-                          createdAt: now.toIso8601String(),
-                        ),
-                      );
+                      for (int i = 0; i < quantity; i++) {
+                        await AppDatabase.instance.insertItem(
+                          InventoryItemRecord(
+                            productId: productId,
+                            categoryId: category?.id,
+                            purchaseDate: now.toIso8601String(),
+                            entryDate: now.toIso8601String(),
+                            expiryDate: expiryDate.toIso8601String(),
+                            finished: 0,
+                            createdAt: now.toIso8601String(),
+                          ),
+                        );
+                      }
 
                       await widget.onSave(
                         ProductItem(
@@ -1223,7 +1132,6 @@ class _ProductFormState extends State<ProductForm> {
                           expiryDate: expiryDate,
                           unitPrice: price,
                           quantity: quantity,
-                          volume: volumeStr,
                         ),
                       );
                     },
@@ -1247,7 +1155,6 @@ class ProductItem {
     required this.expiryDate,
     required this.unitPrice,
     required this.quantity,
-    required this.volume,
   });
 
   final String barcode;
@@ -1256,7 +1163,6 @@ class ProductItem {
   final DateTime expiryDate;
   final double unitPrice;
   final int quantity;
-  final String volume;
 
   int get daysUntilExpiry => expiryDate.difference(DateTime.now()).inDays;
 
@@ -1267,7 +1173,6 @@ class ProductItem {
     'expiryDate': expiryDate.toIso8601String(),
     'unitPrice': unitPrice,
     'quantity': quantity,
-    'volume': volume,
   };
 
   factory ProductItem.fromJson(Map<String, dynamic> json) => ProductItem(
@@ -1277,6 +1182,5 @@ class ProductItem {
     expiryDate: DateTime.parse(json['expiryDate'] as String),
     unitPrice: (json['unitPrice'] as num).toDouble(),
     quantity: json['quantity'] as int,
-    volume: json['volume'] as String? ?? '',
   );
 }

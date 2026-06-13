@@ -37,7 +37,6 @@ void main() {
         barcode: '123',
         name: 'Milk',
         price: 2.5,
-        volume: '1',
         createdAt: DateTime.now().toIso8601String(),
       ),
     );

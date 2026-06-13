@@ -53,7 +53,6 @@ class AppDatabase {
         barcode TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
         price REAL NOT NULL DEFAULT 0,
-        volume TEXT NOT NULL DEFAULT '',
         createdAt TEXT NOT NULL
       )
     ''');
@@ -137,6 +136,25 @@ class AppDatabase {
     }
   }
 
+  Future<List<Map<String, dynamic>>> getDashboardItems() async {
+    return _withRetry((db) async {
+      return await db.rawQuery('''
+        SELECT 
+          p.barcode, 
+          p.name, 
+          p.price, 
+          MIN(i.purchaseDate) as purchaseDate, 
+          i.expiryDate as expiryDate,
+          COUNT(i.id) as quantity
+        FROM product p
+        INNER JOIN items i ON i.productId = p.id
+        WHERE i.finished = 0
+        GROUP BY p.id, i.expiryDate
+        ORDER BY i.expiryDate ASC
+      ''');
+    });
+  }
+
   Future<ProductRecord?> findProductByBarcode(String barcode) async =>
       _withRetry((db) async {
         final rows = await db.query(
@@ -202,8 +220,8 @@ class AppDatabase {
         return rows;
       });
 
-  Future<void> deleteProduct(int productId) async => _withRetry((db) async {
-    await db.delete('items', where: 'productId = ?', whereArgs: [productId]);
+  Future<void> deleteItemsByProductAndExpiry(int productId, String expiryDate) async => _withRetry((db) async {
+    await db.delete('items', where: 'productId = ? AND expiryDate = ?', whereArgs: [productId, expiryDate]);
   });
 
   Future<void> close() async {
@@ -231,7 +249,6 @@ class ProductRecord {
     required this.barcode,
     required this.name,
     required this.price,
-    required this.volume,
     required this.createdAt,
   });
 
@@ -239,7 +256,6 @@ class ProductRecord {
   final String barcode;
   final String name;
   final double price;
-  final String volume;
   final String createdAt;
 
   Map<String, dynamic> toMap() => {
@@ -247,7 +263,6 @@ class ProductRecord {
     'barcode': barcode,
     'name': name,
     'price': price,
-    'volume': volume,
     'createdAt': createdAt,
   }..removeWhere((key, value) => key == 'id' && value == null);
 
@@ -256,7 +271,6 @@ class ProductRecord {
     barcode: map['barcode'] as String,
     name: map['name'] as String,
     price: (map['price'] as num).toDouble(),
-    volume: map['volume'] as String? ?? '',
     createdAt: map['createdAt'] as String,
   );
 }
