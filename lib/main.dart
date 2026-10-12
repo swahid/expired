@@ -2,6 +2,7 @@ import 'package:expired/database_helper.dart';
 import 'package:expired/notification_service.dart';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -100,11 +101,12 @@ class ProductDashboardPage extends StatefulWidget {
   State<ProductDashboardPage> createState() => _ProductDashboardPageState();
 }
 
-enum _DashboardFilter { all, expiringSoon }
+enum _DashboardFilter { all, thisWeek, expired }
 
 class _ProductDashboardPageState extends State<ProductDashboardPage> {
   final List<ProductItem> _products = <ProductItem>[];
   _DashboardFilter _filter = _DashboardFilter.all;
+  ({double used, double wasted}) _monthStats = (used: 0, wasted: 0);
 
   @override
   void initState() {
@@ -115,24 +117,30 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
 
   Future<void> _initNotifications() async {
     await NotificationService.instance.requestPermission();
-    await NotificationService.instance.scheduleDailyChecks();
+    await NotificationService.instance.rescheduleAll();
   }
 
+  /// Reloads the dashboard from the DB and refreshes expiry reminders.
   Future<void> _loadProducts() async {
     try {
       final items = await AppDatabase.instance.getDashboardItems();
+      final stats = await AppDatabase.instance.getMonthlyStats(DateTime.now());
       if (!mounted) return;
       setState(() {
+        _monthStats = stats;
         _products
           ..clear()
           ..addAll(
             items.map(
               (item) => ProductItem(
+                productId: item['productId'] as int,
                 barcode: item['barcode'] as String,
                 name: item['name'] as String,
+                category: item['category'] as String?,
                 purchaseDate:
                     DateTime.tryParse(item['purchaseDate'] as String? ?? '') ??
-                    DateTime.now().subtract(const Duration(days: 30)),
+                    DateTime.now(),
+                expiryKey: item['expiryDate'] as String? ?? '',
                 expiryDate:
                     DateTime.tryParse(item['expiryDate'] as String? ?? '') ??
                     DateTime.now().add(const Duration(days: 60)),
@@ -146,9 +154,13 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
       if (!mounted) return;
       setState(() => _products.clear());
     }
+    NotificationService.instance.rescheduleAll();
   }
 
-  Future<void> _openProductSheet({ProductItem? product, int? index}) async {
+  Future<void> _openProductSheet({
+    ProductItem? product,
+    String? initialBarcode,
+  }) async {
     final navigator = Navigator.of(context);
 
     await showModalBottomSheet<void>(
@@ -167,29 +179,69 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
           ),
           child: ProductForm(
             product: product,
-            onSave: (updatedProduct) async {
+            initialBarcode: initialBarcode,
+            onSave: () async {
               await _loadProducts();
               if (mounted) {
                 navigator.pop();
               }
             },
+            onDelete: product == null
+                ? null
+                : () async {
+                    await _deleteProduct(product);
+                    if (mounted) {
+                      navigator.pop();
+                    }
+                  },
           ),
         );
       },
     );
   }
 
-  Future<void> _deleteProduct(int index) async {
-    final product = _products[index];
-    setState(() {
-      _products.removeAt(index);
-    });
-    final pId = await AppDatabase.instance
-        .findProductByBarcode(product.barcode)
-        .then((value) => value?.id ?? -1);
+  /// FAB flow: open the camera first, then the form with the barcode filled.
+  Future<void> _scanAndAdd() async {
+    final code = await showBarcodeScanner(context, allowManual: true);
+    if (code == null || !mounted) return;
+    await _openProductSheet(initialBarcode: code);
+  }
+
+  Future<void> _deleteProduct(ProductItem product) async {
+    setState(() => _products.remove(product));
     await AppDatabase.instance.deleteItemsByProductAndExpiry(
-      pId,
-      product.expiryDate.toIso8601String(),
+      product.productId,
+      product.expiryKey,
+    );
+    await _loadProducts();
+  }
+
+  /// Marks one unit of [product] as used or wasted, with an Undo snackbar.
+  Future<void> _finishOne(ProductItem product, String reason) async {
+    final ids = await AppDatabase.instance.markItemsFinished(
+      product.productId,
+      product.expiryKey,
+      1,
+      reason,
+    );
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          reason == 'used'
+              ? '${product.name} marked as used'
+              : '${product.name} marked as wasted',
+        ),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () async {
+            await AppDatabase.instance.unfinishItems(ids);
+            await _loadProducts();
+          },
+        ),
+      ),
     );
   }
 
@@ -254,10 +306,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                             letterSpacing: -0.3,
                           ),
                         ),
-                        Text(
-                          'Version 1.0.0',
-                          style: TextStyle(fontSize: 12, color: slate500),
-                        ),
+                        _VersionText(),
                       ],
                     ),
                   ],
@@ -339,16 +388,20 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
 
   @override
   Widget build(BuildContext context) {
-    final expiringSoon = _products
-        .where((product) => product.daysUntilExpiry <= 7)
-        .length;
+    final thisWeek = _products
+        .where((p) => p.daysUntilExpiry >= 0 && p.daysUntilExpiry <= 7)
+        .toList();
+    final expired = _products.where((p) => p.daysUntilExpiry < 0).toList();
 
-    final displayedProducts = _filter == _DashboardFilter.expiringSoon
-        ? _products.where((p) => p.daysUntilExpiry <= 7).toList()
-        : List<ProductItem>.from(_products);
+    final displayedProducts = switch (_filter) {
+      _DashboardFilter.thisWeek => thisWeek,
+      _DashboardFilter.expired => expired,
+      _DashboardFilter.all => List<ProductItem>.from(_products),
+    };
 
     const indigo = Color(0xFFFF5A3C);
     const amber = Color(0xFFF59E0B);
+    const red = Color(0xFFEF4444);
     const slate900 = Color(0xFF1E2233);
     const slate500 = Color(0xFF6B7280);
 
@@ -361,20 +414,6 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
             child: IconButton(
               onPressed: _showAboutMeDialog,
               icon: const Icon(Icons.info_outline, size: 22),
-              style: IconButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: slate900,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-            ),
-          ),
-          Container(
-            margin: const EdgeInsets.only(right: 8),
-            child: IconButton(
-              onPressed: () => _openProductSheet(),
-              icon: const Icon(Icons.add, size: 22),
               style: IconButton.styleFrom(
                 backgroundColor: Colors.white,
                 foregroundColor: slate900,
@@ -414,32 +453,53 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                           setState(() => _filter = _DashboardFilter.all),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: _SummaryCard(
-                      title: 'Expiring soon',
-                      value: '$expiringSoon',
+                      title: 'This week',
+                      value: '${thisWeek.length}',
                       accent: amber,
                       icon: Icons.warning_amber_rounded,
-                      isActive: _filter == _DashboardFilter.expiringSoon,
-                      onTap: () => setState(
-                        () => _filter = _DashboardFilter.expiringSoon,
-                      ),
+                      isActive: _filter == _DashboardFilter.thisWeek,
+                      onTap: () =>
+                          setState(() => _filter = _DashboardFilter.thisWeek),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _SummaryCard(
+                      title: 'Expired',
+                      value: '${expired.length}',
+                      accent: red,
+                      icon: Icons.event_busy_rounded,
+                      isActive: _filter == _DashboardFilter.expired,
+                      onTap: () =>
+                          setState(() => _filter = _DashboardFilter.expired),
                     ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 24),
+            if (_monthStats.used > 0 || _monthStats.wasted > 0)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                child: _MonthStatsBar(
+                  used: _monthStats.used,
+                  wasted: _monthStats.wasted,
+                ),
+              ),
+            const SizedBox(height: 20),
             // section header
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Row(
                 children: [
                   Text(
-                    _filter == _DashboardFilter.expiringSoon
-                        ? 'Expiring Soon'
-                        : 'All Products',
+                    switch (_filter) {
+                      _DashboardFilter.thisWeek => 'Expiring This Week',
+                      _DashboardFilter.expired => 'Expired',
+                      _DashboardFilter.all => 'All Products',
+                    },
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
@@ -448,7 +508,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                     ),
                   ),
                   const Spacer(),
-                  if (_filter == _DashboardFilter.expiringSoon)
+                  if (_filter != _DashboardFilter.all)
                     GestureDetector(
                       onTap: () =>
                           setState(() => _filter = _DashboardFilter.all),
@@ -464,6 +524,14 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                 ],
               ),
             ),
+            if (displayedProducts.isNotEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 4, 20, 0),
+                child: Text(
+                  'Tap to edit · Swipe right when used · Swipe left if wasted',
+                  style: TextStyle(fontSize: 11, color: slate500),
+                ),
+              ),
             const SizedBox(height: 12),
             // list
             Expanded(
@@ -473,39 +541,81 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Icon(
-                            _filter == _DashboardFilter.expiringSoon
-                                ? Icons.check_circle_outline_rounded
-                                : Icons.inventory_2_outlined,
+                            _filter == _DashboardFilter.all
+                                ? Icons.inventory_2_outlined
+                                : Icons.check_circle_outline_rounded,
                             size: 52,
                             color: slate500.withValues(alpha: 0.4),
                           ),
                           const SizedBox(height: 12),
                           Text(
-                            _filter == _DashboardFilter.expiringSoon
-                                ? 'Nothing expiring soon'
-                                : 'No products yet',
+                            switch (_filter) {
+                              _DashboardFilter.thisWeek =>
+                                'Nothing expiring this week',
+                              _DashboardFilter.expired => 'Nothing expired',
+                              _DashboardFilter.all => 'No products yet',
+                            },
                             style: TextStyle(
                               fontSize: 15,
                               color: slate500,
                               fontWeight: FontWeight.w500,
                             ),
                           ),
+                          if (_filter == _DashboardFilter.all) ...[
+                            const SizedBox(height: 16),
+                            OutlinedButton.icon(
+                              onPressed: _scanAndAdd,
+                              icon: const Icon(Icons.qr_code_scanner_rounded),
+                              label: const Text('Scan your first product'),
+                            ),
+                          ],
                         ],
                       ),
                     )
                   : ListView.builder(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 88),
                       itemCount: displayedProducts.length,
                       itemBuilder: (context, index) {
                         final product = displayedProducts[index];
-                        final originalIndex = _products.indexOf(product);
-                        return _ProductCard(
-                          product: product,
-                          onEdit: () => _openProductSheet(
-                            product: product,
-                            index: originalIndex,
+                        return Dismissible(
+                          key: ValueKey(
+                            '${product.productId}-${product.expiryKey}-'
+                            '${product.quantity}',
                           ),
-                          onDelete: () => _deleteProduct(originalIndex),
+                          background: const _SwipeBackground(
+                            color: Color(0xFF10B981),
+                            icon: Icons.check_circle_rounded,
+                            label: 'Used',
+                            alignStart: true,
+                          ),
+                          secondaryBackground: const _SwipeBackground(
+                            color: red,
+                            icon: Icons.delete_sweep_rounded,
+                            label: 'Wasted',
+                            alignStart: false,
+                          ),
+                          confirmDismiss: (direction) async {
+                            await _finishOne(
+                              product,
+                              direction == DismissDirection.startToEnd
+                                  ? 'used'
+                                  : 'wasted',
+                            );
+                            // Groups with more units stay; just reload counts.
+                            if (product.quantity > 1) {
+                              _loadProducts();
+                              return false;
+                            }
+                            return true;
+                          },
+                          onDismissed: (_) {
+                            setState(() => _products.remove(product));
+                            _loadProducts();
+                          },
+                          child: _ProductCard(
+                            product: product,
+                            onTap: () => _openProductSheet(product: product),
+                          ),
                         );
                       },
                     ),
@@ -514,7 +624,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
         ),
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openProductSheet(),
+        onPressed: _scanAndAdd,
         backgroundColor: const Color(0xFFFF5A3C),
         foregroundColor: Colors.white,
         elevation: 0,
@@ -524,6 +634,117 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
           style: TextStyle(fontWeight: FontWeight.w600, letterSpacing: 0.2),
         ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+    );
+  }
+}
+
+class _VersionText extends StatelessWidget {
+  const _VersionText();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<PackageInfo>(
+      future: PackageInfo.fromPlatform(),
+      builder: (context, snapshot) {
+        final version = snapshot.data?.version;
+        return Text(
+          version == null ? '' : 'Version $version',
+          style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
+        );
+      },
+    );
+  }
+}
+
+class _MonthStatsBar extends StatelessWidget {
+  const _MonthStatsBar({required this.used, required this.wasted});
+
+  final double used;
+  final double wasted;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          const Text(
+            'This month',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF1E2233),
+            ),
+          ),
+          const Spacer(),
+          const Icon(
+            Icons.check_circle_rounded,
+            size: 14,
+            color: Color(0xFF10B981),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            'Used ৳${used.toStringAsFixed(0)}',
+            style: const TextStyle(fontSize: 12, color: Color(0xFF10B981)),
+          ),
+          const SizedBox(width: 12),
+          const Icon(
+            Icons.delete_sweep_rounded,
+            size: 14,
+            color: Color(0xFFEF4444),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            'Wasted ৳${wasted.toStringAsFixed(0)}',
+            style: const TextStyle(fontSize: 12, color: Color(0xFFEF4444)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SwipeBackground extends StatelessWidget {
+  const _SwipeBackground({
+    required this.color,
+    required this.icon,
+    required this.label,
+    required this.alignStart,
+  });
+
+  final Color color;
+  final IconData icon;
+  final String label;
+  final bool alignStart;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      alignment: alignStart ? Alignment.centerLeft : Alignment.centerRight,
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: Colors.white, size: 20),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -620,15 +841,10 @@ class _SummaryCard extends StatelessWidget {
 }
 
 class _ProductCard extends StatelessWidget {
-  const _ProductCard({
-    required this.product,
-    required this.onEdit,
-    required this.onDelete,
-  });
+  const _ProductCard({required this.product, required this.onTap});
 
   final ProductItem product;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -644,7 +860,15 @@ class _ProductCard extends StatelessWidget {
         ? 'Expired'
         : days == 0
         ? 'Today'
+        : days == 1
+        ? 'Tomorrow'
         : '$days d left';
+    final details = [
+      'Qty ${product.quantity}',
+      if (product.unitPrice > 0) '৳${product.unitPrice.toStringAsFixed(0)}',
+      if (product.category != null && product.category!.isNotEmpty)
+        product.category!,
+    ].join('  ·  ');
 
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
@@ -659,93 +883,87 @@ class _ProductCard extends StatelessWidget {
           ),
         ],
       ),
-      child: ClipRRect(
+      child: Material(
+        color: Colors.transparent,
         borderRadius: BorderRadius.circular(16),
-        child: IntrinsicHeight(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // left accent bar
-              Container(width: 4, color: accentColor),
-              // content
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      // icon
-                      Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: accentColor.withValues(alpha: 0.1),
-                          borderRadius: BorderRadius.circular(12),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // left accent bar
+                Container(width: 4, color: accentColor),
+                // content
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        // icon
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: accentColor.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(
+                            Icons.inventory_2_rounded,
+                            size: 20,
+                            color: accentColor,
+                          ),
                         ),
-                        child: Icon(
-                          Icons.inventory_2_rounded,
-                          size: 20,
-                          color: accentColor,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      // info
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(
-                              product.name,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                                fontSize: 14,
-                                color: Color(0xFF1E2233),
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 4),
-                            Row(
-                              children: [
-                                _Tag(label: expiryLabel, color: accentColor),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'Qty ${product.quantity}  ·  ৳${product.unitPrice.toStringAsFixed(0)}',
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: Color(0xFF6B7280),
-                                  ),
+                        const SizedBox(width: 12),
+                        // info
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                product.name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 14,
+                                  color: Color(0xFF1E2233),
                                 ),
-                              ],
-                            ),
-                          ],
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 4),
+                              Row(
+                                children: [
+                                  _Tag(label: expiryLabel, color: accentColor),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      details,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Color(0xFF6B7280),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                      // actions
-                      Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _ActionBtn(
-                            icon: Icons.edit_rounded,
-                            color: const Color(0xFFFF5A3C),
-                            onPressed: onEdit,
-                            tooltip: 'Edit',
-                          ),
-                          const SizedBox(height: 4),
-                          _ActionBtn(
-                            icon: Icons.delete_rounded,
-                            color: const Color(0xFFEF4444),
-                            onPressed: onDelete,
-                            tooltip: 'Delete',
-                          ),
-                        ],
-                      ),
-                    ],
+                        const Icon(
+                          Icons.chevron_right_rounded,
+                          color: Color(0xFFCBD5E1),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -778,43 +996,158 @@ class _Tag extends StatelessWidget {
   }
 }
 
-class _ActionBtn extends StatelessWidget {
-  const _ActionBtn({
-    required this.icon,
-    required this.color,
-    required this.onPressed,
-    required this.tooltip,
-  });
-  final IconData icon;
-  final Color color;
-  final VoidCallback onPressed;
-  final String tooltip;
+/// Opens the camera scanner. Returns the scanned code, `''` when the user
+/// chose to enter details manually (only if [allowManual]), or `null` when
+/// the scanner was closed.
+Future<String?> showBarcodeScanner(
+  BuildContext context, {
+  bool allowManual = false,
+}) async {
+  try {
+    final status = await Permission.camera.request();
+    if (!context.mounted) return null;
+
+    if (!status.isGranted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Camera permission is required to scan barcodes.'),
+        ),
+      );
+      return allowManual ? '' : null;
+    }
+
+    return await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => _ScannerSheet(allowManual: allowManual),
+    );
+  } catch (_) {
+    if (!context.mounted) return null;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Unable to open the scanner right now.')),
+    );
+    return allowManual ? '' : null;
+  }
+}
+
+class _ScannerSheet extends StatefulWidget {
+  const _ScannerSheet({required this.allowManual});
+
+  final bool allowManual;
+
+  @override
+  State<_ScannerSheet> createState() => _ScannerSheetState();
+}
+
+class _ScannerSheetState extends State<_ScannerSheet> {
+  final MobileScannerController _controller = MobileScannerController();
+
+  // onDetect fires repeatedly while a code is in view; only handle it once so
+  // we never pop more than this sheet.
+  bool _handled = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _onDetect(BarcodeCapture capture) {
+    if (_handled) return;
+    final value = capture.barcodes.firstOrNull?.rawValue?.trim();
+    if (value == null || value.isEmpty) return;
+    _handled = true;
+    _controller.stop();
+    Navigator.of(context).pop(value);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: tooltip,
-      child: GestureDetector(
-        onTap: onPressed,
-        child: Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Icon(icon, size: 16, color: color),
+    return SafeArea(
+      child: SizedBox(
+        height: MediaQuery.of(context).size.height * 0.72,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Scan barcode',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: MobileScanner(
+                controller: _controller,
+                onDetect: _onDetect,
+              ),
+            ),
+            if (widget.allowManual)
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.of(context).pop(''),
+                    icon: const Icon(Icons.edit_note_rounded),
+                    label: const Text('No barcode? Enter manually'),
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
   }
 }
 
-class ProductForm extends StatefulWidget {
-  const ProductForm({required this.onSave, this.product, super.key});
+const _quickExpiryOptions = <({String label, int days})>[
+  (label: '3 days', days: 3),
+  (label: '1 week', days: 7),
+  (label: '2 weeks', days: 14),
+  (label: '1 month', days: 30),
+  (label: '3 months', days: 90),
+  (label: '6 months', days: 180),
+  (label: '1 year', days: 365),
+];
 
-  final Future<void> Function(ProductItem) onSave;
+DateTime _today() {
+  final now = DateTime.now();
+  return DateTime(now.year, now.month, now.day);
+}
+
+String _formatPrice(double price) {
+  if (price == 0) return '';
+  return price == price.roundToDouble()
+      ? price.toStringAsFixed(0)
+      : price.toString();
+}
+
+class ProductForm extends StatefulWidget {
+  const ProductForm({
+    required this.onSave,
+    this.product,
+    this.initialBarcode,
+    this.onDelete,
+    super.key,
+  });
+
+  final Future<void> Function() onSave;
   final ProductItem? product;
+  final String? initialBarcode;
+  final Future<void> Function()? onDelete;
 
   @override
   State<ProductForm> createState() => _ProductFormState();
@@ -825,13 +1158,11 @@ class _ProductFormState extends State<ProductForm> {
   late final TextEditingController nameController;
   late final TextEditingController priceController;
   late final TextEditingController quantityController;
-  // Volume variables removed
   TextEditingController? categoryController;
-  final MobileScannerController scannerController = MobileScannerController();
   List<CategoryRecord> _categories = const [];
   bool _isLoadingCategories = true;
+  bool _isSaving = false;
   String? _loadError;
-  late DateTime purchaseDate;
   late DateTime expiryDate;
 
   // FocusNodes to control next field and skip category autoexpand
@@ -846,26 +1177,33 @@ class _ProductFormState extends State<ProductForm> {
     super.initState();
     _loadCategories();
     final product = widget.product;
-    barcodeController = TextEditingController(text: product?.barcode ?? '');
+    final barcode = product?.barcode ?? widget.initialBarcode ?? '';
+    // Auto-generated ids for barcode-less items are hidden from the user.
+    barcodeController = TextEditingController(
+      text: barcode.startsWith(_localBarcodePrefix) ? '' : barcode,
+    );
     nameController = TextEditingController(text: product?.name ?? '');
     priceController = TextEditingController(
-      text: product?.unitPrice.toString() ?? '',
+      text: product == null ? '' : _formatPrice(product.unitPrice),
     );
     quantityController = TextEditingController(
       text: product?.quantity.toString() ?? '1',
     );
 
-    purchaseDate =
-        product?.purchaseDate ??
-        DateTime.now().subtract(const Duration(days: 30));
-    expiryDate =
-        product?.expiryDate ?? DateTime.now().add(const Duration(days: 7));
+    final expiry = product?.expiryDate;
+    expiryDate = expiry != null
+        ? DateTime(expiry.year, expiry.month, expiry.day)
+        : _today().add(const Duration(days: 7));
 
     barcodeFocusNode = FocusNode();
     nameFocusNode = FocusNode();
     // categoryFocusNode is managed by Autocomplete
     priceFocusNode = FocusNode();
     quantityFocusNode = FocusNode();
+
+    if (product == null && barcode.isNotEmpty) {
+      _applyKnownProduct(barcode);
+    }
   }
 
   Future<void> _loadCategories() async {
@@ -887,6 +1225,34 @@ class _ProductFormState extends State<ProductForm> {
     }
   }
 
+  /// Pre-fills the form from a previously saved product with [barcode].
+  Future<void> _applyKnownProduct(String barcode) async {
+    try {
+      final record = await AppDatabase.instance.findProductByBarcode(barcode);
+      if (!mounted) return;
+      if (record == null) {
+        nameFocusNode.requestFocus();
+        return;
+      }
+      final categoryId = record.categoryId;
+      final category = categoryId == null
+          ? null
+          : await AppDatabase.instance.getCategoryById(categoryId);
+      if (!mounted) return;
+      setState(() {
+        nameController.text = record.name;
+        priceController.text = _formatPrice(record.price);
+        if (category != null) categoryController?.text = category.name;
+        final shelfDays = record.defaultShelfDays;
+        if (shelfDays != null && shelfDays > 0) {
+          expiryDate = _today().add(Duration(days: shelfDays));
+        }
+      });
+    } catch (_) {
+      if (mounted) nameFocusNode.requestFocus();
+    }
+  }
+
   @override
   void dispose() {
     barcodeController.dispose();
@@ -898,98 +1264,118 @@ class _ProductFormState extends State<ProductForm> {
     // categoryFocusNode is disposed by Autocomplete
     priceFocusNode.dispose();
     quantityFocusNode.dispose();
-    scannerController.dispose();
     super.dispose();
   }
 
   Future<void> _openBarcodeScanner() async {
-    try {
-      final status = await Permission.camera.request();
+    final code = await showBarcodeScanner(context);
+    if (code == null || code.isEmpty || !mounted) return;
+    barcodeController.text = code;
+    await _applyKnownProduct(code);
+  }
 
-      if (!mounted) {
-        return;
+  Future<void> _confirmDelete() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete product?'),
+        content: Text(
+          'This removes all ${widget.product!.quantity} unit(s) of '
+          '${widget.product!.name} with this expiry date.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFEF4444),
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await widget.onDelete?.call();
+    }
+  }
+
+  Future<void> _save() async {
+    final name = nameController.text.trim();
+    if (name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter a product name.')),
+      );
+      return;
+    }
+
+    setState(() => _isSaving = true);
+    try {
+      final enteredBarcode = barcodeController.text.trim();
+      final barcode = enteredBarcode.isNotEmpty
+          ? enteredBarcode
+          : widget.product?.barcode ??
+                '$_localBarcodePrefix${DateTime.now().microsecondsSinceEpoch}';
+      final price = double.tryParse(priceController.text) ?? 0.0;
+      final quantity = int.tryParse(quantityController.text) ?? 1;
+      final categoryName = categoryController?.text.trim() ?? '';
+      final category = _categories
+          .where(
+            (item) => item.name.toLowerCase() == categoryName.toLowerCase(),
+          )
+          .firstOrNull;
+      final shelfDays = expiryDate.difference(_today()).inDays;
+
+      final existingProduct = await AppDatabase.instance.findProductByBarcode(
+        barcode,
+      );
+      final productId = await AppDatabase.instance.upsertProduct(
+        ProductRecord(
+          id: existingProduct?.id,
+          barcode: barcode,
+          name: name,
+          price: price,
+          categoryId: category?.id,
+          defaultShelfDays: shelfDays > 0
+              ? shelfDays
+              : existingProduct?.defaultShelfDays,
+          createdAt:
+              existingProduct?.createdAt ?? DateTime.now().toIso8601String(),
+        ),
+      );
+
+      final original = widget.product;
+      if (original != null) {
+        // Remove the old group by its original product, so changing the
+        // barcode doesn't leave a duplicate behind.
+        await AppDatabase.instance.deleteItemsByProductAndExpiry(
+          original.productId,
+          original.expiryKey,
+        );
       }
 
-      if (!status.isGranted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Camera permission is required to scan barcodes.'),
+      final now = DateTime.now();
+      final purchaseDate = original?.purchaseDate ?? now;
+      for (int i = 0; i < quantity; i++) {
+        await AppDatabase.instance.insertItem(
+          InventoryItemRecord(
+            productId: productId,
+            categoryId: category?.id,
+            purchaseDate: purchaseDate.toIso8601String(),
+            entryDate: now.toIso8601String(),
+            expiryDate: dateOnlyString(expiryDate),
+            finished: 0,
+            createdAt: now.toIso8601String(),
           ),
         );
-        return;
       }
 
-      await showModalBottomSheet<void>(
-        context: context,
-        isScrollControlled: true,
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        builder: (sheetContext) {
-          return SafeArea(
-            child: SizedBox(
-              height: MediaQuery.of(sheetContext).size.height * 0.72,
-              child: Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'Scan barcode',
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                        ),
-                        IconButton(
-                          onPressed: () => Navigator.of(sheetContext).pop(),
-                          icon: const Icon(Icons.close),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: MobileScanner(
-                      controller: scannerController,
-                      onDetect: (capture) {
-                        final value = capture.barcodes.firstOrNull?.rawValue
-                            ?.trim();
-                        if (value == null || value.isEmpty) {
-                          return;
-                        }
-
-                        barcodeController.text = value;
-                        AppDatabase.instance
-                            .findProductByBarcode(value)
-                            .then((record) {
-                              if (!mounted) return;
-                              if (record != null) {
-                                nameController.text = record.name;
-                                priceController.text = record.price.toString();
-                              }
-                              nameFocusNode.requestFocus();
-                            })
-                            .catchError((_) {
-                              nameFocusNode.requestFocus();
-                            });
-                        Navigator.of(sheetContext).pop();
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Barcode captured: $value')),
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to open the scanner right now.')),
-      );
+      await widget.onSave();
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
     }
   }
 
@@ -998,6 +1384,8 @@ class _ProductFormState extends State<ProductForm> {
     const indigo = Color(0xFFFF5A3C);
     const slate900 = Color(0xFF1E2233);
     const slate500 = Color(0xFF6B7280);
+    final today = _today();
+    final pickerFirstDate = expiryDate.isBefore(today) ? expiryDate : today;
 
     return SingleChildScrollView(
       child: Column(
@@ -1055,7 +1443,7 @@ class _ProductFormState extends State<ProductForm> {
             focusNode: barcodeFocusNode,
             onSubmitted: (_) => nameFocusNode.requestFocus(),
             decoration: InputDecoration(
-              labelText: 'Barcode',
+              labelText: 'Barcode (optional)',
               border: const OutlineInputBorder(),
               suffixIcon: IconButton(
                 tooltip: 'Scan barcode',
@@ -1068,6 +1456,7 @@ class _ProductFormState extends State<ProductForm> {
           TextField(
             controller: nameController,
             focusNode: nameFocusNode,
+            textCapitalization: TextCapitalization.sentences,
             onSubmitted: (_) => priceFocusNode.requestFocus(),
             decoration: const InputDecoration(
               labelText: 'Product name',
@@ -1075,6 +1464,31 @@ class _ProductFormState extends State<ProductForm> {
             ),
           ),
           const SizedBox(height: 12),
+          const Text(
+            'Expires in',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: slate900,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final option in _quickExpiryOptions)
+                ChoiceChip(
+                  label: Text(option.label),
+                  selected:
+                      expiryDate == today.add(Duration(days: option.days)),
+                  onSelected: (_) => setState(
+                    () => expiryDate = today.add(Duration(days: option.days)),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
@@ -1082,23 +1496,30 @@ class _ProductFormState extends State<ProductForm> {
                 final picked = await showDatePicker(
                   context: context,
                   initialDate: expiryDate,
-                  firstDate: DateTime.now(),
+                  firstDate: pickerFirstDate,
                   lastDate: DateTime(2100),
                 );
                 if (picked != null) {
-                  setState(() => expiryDate = picked);
+                  setState(
+                    () => expiryDate = DateTime(
+                      picked.year,
+                      picked.month,
+                      picked.day,
+                    ),
+                  );
                   categoryFocusNode?.requestFocus();
                 }
               },
               icon: const Icon(Icons.calendar_month_outlined),
-              label: Text(
-                'Expiry date: ${expiryDate.toLocal().toString().split(' ').first}',
-              ),
+              label: Text('Expiry date: ${dateOnlyString(expiryDate)}'),
             ),
           ),
           const SizedBox(height: 12),
 
           Autocomplete<String>(
+            initialValue: TextEditingValue(
+              text: widget.product?.category ?? '',
+            ),
             optionsBuilder: (textEditingValue) {
               if (textEditingValue.text.trim().isEmpty) {
                 return const Iterable<String>.empty();
@@ -1135,7 +1556,9 @@ class _ProductFormState extends State<ProductForm> {
                 child: TextField(
                   controller: priceController,
                   focusNode: priceFocusNode,
-                  keyboardType: TextInputType.number,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
                   onSubmitted: (_) => quantityFocusNode.requestFocus(),
                   decoration: const InputDecoration(
                     labelText: 'Unit price',
@@ -1218,130 +1641,67 @@ class _ProductFormState extends State<ProductForm> {
                   letterSpacing: 0.2,
                 ),
               ),
-              onPressed: _isLoadingCategories
-                  ? null
-                  : () async {
-                      final barcode = barcodeController.text.trim();
-                      final name = nameController.text.trim();
-                      if (barcode.isEmpty || name.isEmpty) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text(
-                              'Please enter barcode and product name.',
-                            ),
-                          ),
-                        );
-                        return;
-                      }
-
-                      final price =
-                          double.tryParse(priceController.text) ?? 0.0;
-                      final quantity =
-                          int.tryParse(quantityController.text) ?? 1;
-                      final categoryName =
-                          categoryController?.text.trim() ?? '';
-
-                      final existingProduct = await AppDatabase.instance
-                          .findProductByBarcode(barcode);
-                      final productId = await AppDatabase.instance
-                          .upsertProduct(
-                            ProductRecord(
-                              id: existingProduct?.id,
-                              barcode: barcode,
-                              name: name,
-                              price: price,
-                              createdAt:
-                                  existingProduct?.createdAt ??
-                                  DateTime.now().toIso8601String(),
-                            ),
-                          );
-
-                      if (widget.product != null) {
-                        await AppDatabase.instance
-                            .deleteItemsByProductAndExpiry(
-                              productId,
-                              widget.product!.expiryDate.toIso8601String(),
-                            );
-                      }
-                      final category = _categories
-                          .where(
-                            (item) =>
-                                item.name.toLowerCase() ==
-                                categoryName.toLowerCase(),
-                          )
-                          .firstOrNull;
-                      final now = DateTime.now();
-                      for (int i = 0; i < quantity; i++) {
-                        await AppDatabase.instance.insertItem(
-                          InventoryItemRecord(
-                            productId: productId,
-                            categoryId: category?.id,
-                            purchaseDate: now.toIso8601String(),
-                            entryDate: now.toIso8601String(),
-                            expiryDate: expiryDate.toIso8601String(),
-                            finished: 0,
-                            createdAt: now.toIso8601String(),
-                          ),
-                        );
-                      }
-
-                      await widget.onSave(
-                        ProductItem(
-                          barcode: barcode,
-                          name: name,
-                          purchaseDate: now,
-                          expiryDate: expiryDate,
-                          unitPrice: price,
-                          quantity: quantity,
-                        ),
-                      );
-                    },
+              onPressed: _isLoadingCategories || _isSaving ? null : _save,
               icon: const Icon(Icons.save_alt),
               label: Text(
                 widget.product == null ? 'Save product' : 'Update product',
               ),
             ),
           ),
+          if (widget.onDelete != null) ...[
+            const SizedBox(height: 8),
+            Center(
+              child: TextButton.icon(
+                onPressed: _isSaving ? null : _confirmDelete,
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFFEF4444),
+                ),
+                icon: const Icon(Icons.delete_outline_rounded),
+                label: const Text('Delete product'),
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
 }
 
+/// Prefix for ids generated for products saved without a barcode.
+const _localBarcodePrefix = 'local-';
+
 class ProductItem {
   ProductItem({
+    required this.productId,
     required this.barcode,
     required this.name,
     required this.purchaseDate,
+    required this.expiryKey,
     required this.expiryDate,
     required this.unitPrice,
     required this.quantity,
+    this.category,
   });
 
+  final int productId;
   final String barcode;
   final String name;
+  final String? category;
   final DateTime purchaseDate;
+
+  /// Expiry value exactly as stored in the DB; used to match the item group.
+  final String expiryKey;
   final DateTime expiryDate;
   final double unitPrice;
   final int quantity;
 
-  int get daysUntilExpiry => expiryDate.difference(DateTime.now()).inDays;
-
-  Map<String, dynamic> toJson() => {
-    'barcode': barcode,
-    'name': name,
-    'purchaseDate': purchaseDate.toIso8601String(),
-    'expiryDate': expiryDate.toIso8601String(),
-    'unitPrice': unitPrice,
-    'quantity': quantity,
-  };
-
-  factory ProductItem.fromJson(Map<String, dynamic> json) => ProductItem(
-    barcode: json['barcode'] as String,
-    name: json['name'] as String,
-    purchaseDate: DateTime.parse(json['purchaseDate'] as String),
-    expiryDate: DateTime.parse(json['expiryDate'] as String),
-    unitPrice: (json['unitPrice'] as num).toDouble(),
-    quantity: json['quantity'] as int,
-  );
+  /// Whole calendar days from today until expiry (negative once expired).
+  int get daysUntilExpiry {
+    final now = DateTime.now();
+    return DateTime.utc(
+      expiryDate.year,
+      expiryDate.month,
+      expiryDate.day,
+    ).difference(DateTime.utc(now.year, now.month, now.day)).inDays;
+  }
 }

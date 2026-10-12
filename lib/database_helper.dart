@@ -1,6 +1,12 @@
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 
+/// Formats [date] as a date-only `yyyy-MM-dd` string used for expiry dates.
+String dateOnlyString(DateTime date) =>
+    '${date.year.toString().padLeft(4, '0')}-'
+    '${date.month.toString().padLeft(2, '0')}-'
+    '${date.day.toString().padLeft(2, '0')}';
+
 class AppDatabase {
   AppDatabase._();
 
@@ -29,7 +35,7 @@ class AppDatabase {
 
     return openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
       onOpen: (db) async => _seedDefaultCategories(db),
@@ -38,12 +44,27 @@ class AppDatabase {
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
-      await _seedDefaultCategories(db);
-      // Add expiryDate column to items table
+      await _addColumnIfMissing(db, 'product', 'categoryId', 'INTEGER');
+      await _addColumnIfMissing(db, 'product', 'defaultShelfDays', 'INTEGER');
+      await _addColumnIfMissing(db, 'items', 'finishedAt', 'TEXT');
+      await _addColumnIfMissing(db, 'items', 'finishReason', 'TEXT');
+      // v1 stored expiry with a time component; normalize to yyyy-MM-dd.
       await db.execute(
-        'ALTER TABLE items ADD COLUMN expiryDate TEXT NOT NULL DEFAULT ""',
+        'UPDATE items SET expiryDate = substr(expiryDate, 1, 10) '
+        'WHERE length(expiryDate) > 10',
       );
     }
+  }
+
+  Future<void> _addColumnIfMissing(
+    Database db,
+    String table,
+    String column,
+    String type,
+  ) async {
+    final columns = await db.rawQuery('PRAGMA table_info($table)');
+    if (columns.any((c) => c['name'] == column)) return;
+    await db.execute('ALTER TABLE $table ADD COLUMN $column $type');
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -53,6 +74,8 @@ class AppDatabase {
         barcode TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL,
         price REAL NOT NULL DEFAULT 0,
+        categoryId INTEGER,
+        defaultShelfDays INTEGER,
         createdAt TEXT NOT NULL
       )
     ''');
@@ -74,6 +97,8 @@ class AppDatabase {
         entryDate TEXT NOT NULL,
         expiryDate TEXT NOT NULL DEFAULT "",
         finished INTEGER NOT NULL DEFAULT 0,
+        finishedAt TEXT,
+        finishReason TEXT,
         createdAt TEXT NOT NULL,
         FOREIGN KEY (productId) REFERENCES product(id) ON DELETE CASCADE,
         FOREIGN KEY (categoryId) REFERENCES category(id) ON DELETE SET NULL
@@ -142,15 +167,18 @@ class AppDatabase {
   Future<List<Map<String, dynamic>>> getDashboardItems() async {
     return _withRetry((db) async {
       return await db.rawQuery('''
-        SELECT 
-          p.barcode, 
-          p.name, 
-          p.price, 
-          MIN(i.purchaseDate) as purchaseDate, 
+        SELECT
+          p.id as productId,
+          p.barcode,
+          p.name,
+          p.price,
+          MIN(i.purchaseDate) as purchaseDate,
           i.expiryDate as expiryDate,
-          COUNT(i.id) as quantity
+          COUNT(i.id) as quantity,
+          MAX(c.name) as category
         FROM product p
         INNER JOIN items i ON i.productId = p.id
+        LEFT JOIN category c ON c.id = i.categoryId
         WHERE i.finished = 0
         GROUP BY p.id, i.expiryDate
         ORDER BY i.expiryDate ASC
@@ -201,26 +229,94 @@ class AppDatabase {
     return rows.map(InventoryItemRecord.fromMap).toList();
   });
 
-  /// Returns items expiring within [withinDays] days (and not yet finished).
-  Future<List<Map<String, dynamic>>> getExpiringItems({
-    int withinDays = 7,
-  }) async => _withRetry((db) async {
-    final now = DateTime.now();
-    final cutoff = now.add(Duration(days: withinDays));
-    final rows = await db.rawQuery(
-      '''
-          SELECT p.name, i.expiryDate
+  /// Returns unfinished items with a known expiry date, soonest first.
+  Future<List<Map<String, dynamic>>> getUpcomingExpiries() async =>
+      _withRetry((db) async {
+        return db.rawQuery('''
+          SELECT p.name, i.expiryDate, COUNT(i.id) as quantity
           FROM items i
           JOIN product p ON p.id = i.productId
           WHERE i.finished = 0
             AND i.expiryDate != ""
-            AND i.expiryDate <= ?
+          GROUP BY p.id, i.expiryDate
           ORDER BY i.expiryDate ASC
-          ''',
-      [cutoff.toIso8601String()],
+        ''');
+      });
+
+  /// Marks up to [count] unfinished items of a product/expiry group as
+  /// finished with [reason] ('used' or 'wasted'). Returns the affected ids so
+  /// the action can be undone with [unfinishItems].
+  Future<List<int>> markItemsFinished(
+    int productId,
+    String expiryDate,
+    int count,
+    String reason,
+  ) async => _withRetry((db) async {
+    final rows = await db.query(
+      'items',
+      columns: ['id'],
+      where: 'productId = ? AND expiryDate = ? AND finished = 0',
+      whereArgs: [productId, expiryDate],
+      limit: count,
     );
-    return rows;
+    final ids = rows.map((row) => row['id'] as int).toList();
+    if (ids.isEmpty) return ids;
+    await db.update(
+      'items',
+      {
+        'finished': 1,
+        'finishedAt': DateTime.now().toIso8601String(),
+        'finishReason': reason,
+      },
+      where: 'id IN (${List.filled(ids.length, '?').join(',')})',
+      whereArgs: ids,
+    );
+    return ids;
   });
+
+  Future<void> unfinishItems(List<int> ids) async => _withRetry((db) async {
+    if (ids.isEmpty) return;
+    await db.update(
+      'items',
+      {'finished': 0, 'finishedAt': null, 'finishReason': null},
+      where: 'id IN (${List.filled(ids.length, '?').join(',')})',
+      whereArgs: ids,
+    );
+  });
+
+  /// Total value of items marked used / wasted during [month].
+  Future<({double used, double wasted})> getMonthlyStats(
+    DateTime month,
+  ) async => _withRetry((db) async {
+    final start = DateTime(month.year, month.month);
+    final end = DateTime(month.year, month.month + 1);
+    final rows = await db.rawQuery(
+      '''
+          SELECT i.finishReason as reason, SUM(p.price) as total
+          FROM items i
+          JOIN product p ON p.id = i.productId
+          WHERE i.finished = 1 AND i.finishedAt >= ? AND i.finishedAt < ?
+          GROUP BY i.finishReason
+          ''',
+      [start.toIso8601String(), end.toIso8601String()],
+    );
+    double totalFor(String reason) =>
+        (rows.where((r) => r['reason'] == reason).firstOrNull?['total'] as num?)
+            ?.toDouble() ??
+        0;
+    return (used: totalFor('used'), wasted: totalFor('wasted'));
+  });
+
+  Future<CategoryRecord?> getCategoryById(int id) async =>
+      _withRetry((db) async {
+        final rows = await db.query(
+          'category',
+          where: 'id = ?',
+          whereArgs: [id],
+          limit: 1,
+        );
+        return rows.isEmpty ? null : CategoryRecord.fromMap(rows.first);
+      });
 
   Future<void> deleteItemsByProductAndExpiry(
     int productId,
@@ -259,6 +355,8 @@ class ProductRecord {
     required this.name,
     required this.price,
     required this.createdAt,
+    this.categoryId,
+    this.defaultShelfDays,
   });
 
   final int? id;
@@ -266,12 +364,18 @@ class ProductRecord {
   final String name;
   final double price;
   final String createdAt;
+  final int? categoryId;
+
+  /// Days between adding and expiry last time; used to pre-fill re-scans.
+  final int? defaultShelfDays;
 
   Map<String, dynamic> toMap() => {
     'id': id,
     'barcode': barcode,
     'name': name,
     'price': price,
+    'categoryId': categoryId,
+    'defaultShelfDays': defaultShelfDays,
     'createdAt': createdAt,
   }..removeWhere((key, value) => key == 'id' && value == null);
 
@@ -280,6 +384,8 @@ class ProductRecord {
     barcode: map['barcode'] as String,
     name: map['name'] as String,
     price: (map['price'] as num).toDouble(),
+    categoryId: map['categoryId'] as int?,
+    defaultShelfDays: map['defaultShelfDays'] as int?,
     createdAt: map['createdAt'] as String,
   );
 }
