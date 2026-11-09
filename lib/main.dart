@@ -1,3 +1,5 @@
+import 'package:expired/backup_helper.dart';
+import 'package:expired/barcode_service.dart';
 import 'package:expired/database_helper.dart';
 import 'package:expired/notification_service.dart';
 import 'package:flutter/material.dart';
@@ -17,10 +19,10 @@ class ExpiredApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const slate900 = Color(0xFF1E2233); // logo wordmark navy
+    const slate900 = Color(0xFF1E2233);
     const slate700 = Color(0xFF475569);
     const slate100 = Color(0xFFF6F7FB);
-    const indigo500 = Color(0xFFFF5A3C); // logo coral/orange-red
+    const indigo500 = Color(0xFFFF5A3C);
 
     return MaterialApp(
       title: 'Expired',
@@ -71,7 +73,7 @@ class ExpiredApp extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
             borderSide: const BorderSide(color: indigo500, width: 1.5),
           ),
-          labelStyle: TextStyle(color: slate700, fontSize: 14),
+          labelStyle: const TextStyle(color: slate700, fontSize: 14),
           contentPadding: const EdgeInsets.symmetric(
             horizontal: 16,
             vertical: 14,
@@ -106,7 +108,13 @@ enum _DashboardFilter { all, thisWeek, expired }
 class _ProductDashboardPageState extends State<ProductDashboardPage> {
   final List<ProductItem> _products = <ProductItem>[];
   _DashboardFilter _filter = _DashboardFilter.all;
-  ({double used, double wasted}) _monthStats = (used: 0, wasted: 0);
+  String? _storageFilter; // null = All, 'fridge', 'freezer', 'pantry'
+  ({double used, double wasted, int usedCount, int wastedCount}) _monthStats = (
+    used: 0,
+    wasted: 0,
+    usedCount: 0,
+    wastedCount: 0,
+  );
 
   @override
   void initState() {
@@ -120,7 +128,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
     await NotificationService.instance.rescheduleAll();
   }
 
-  /// Reloads the dashboard from the DB and refreshes expiry reminders.
+  /// Reloads the dashboard from the DB, refreshes reminders, and updates JSON mirror.
   Future<void> _loadProducts() async {
     try {
       final items = await AppDatabase.instance.getDashboardItems();
@@ -140,16 +148,26 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                 purchaseDate:
                     DateTime.tryParse(item['purchaseDate'] as String? ?? '') ??
                     DateTime.now(),
+                cookedDate:
+                    DateTime.tryParse(item['cookedDate'] as String? ?? ''),
                 expiryKey: item['expiryDate'] as String? ?? '',
                 expiryDate:
                     DateTime.tryParse(item['expiryDate'] as String? ?? '') ??
                     DateTime.now().add(const Duration(days: 60)),
                 unitPrice: (item['price'] as num).toDouble(),
                 quantity: item['quantity'] as int,
+                storageLocation:
+                    item['storageLocation'] as String? ??
+                    StorageLocation.fridge,
+                portionCount: (item['totalPortions'] as num?)?.toInt() ?? 1,
+                isHomemade: (item['isHomemade'] as num?)?.toInt() != 0,
+                notes: item['notes'] as String?,
               ),
             ),
           );
       });
+      // Maintain offline mirror backup in background
+      LocalBackupHelper.instance.updateMirrorBackup();
     } catch (_) {
       if (!mounted) return;
       setState(() => _products.clear());
@@ -160,6 +178,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
   Future<void> _openProductSheet({
     ProductItem? product,
     String? initialBarcode,
+    String? initialLocation,
   }) async {
     final navigator = Navigator.of(context);
 
@@ -180,6 +199,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
           child: ProductForm(
             product: product,
             initialBarcode: initialBarcode,
+            initialLocation: initialLocation ?? _storageFilter,
             onSave: () async {
               await _loadProducts();
               if (mounted) {
@@ -200,6 +220,11 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
     );
   }
 
+  /// Flow to add without camera scan directly (ideal for homemade food).
+  Future<void> _quickAddFood() async {
+    await _openProductSheet(initialBarcode: '');
+  }
+
   /// FAB flow: open the camera first, then the form with the barcode filled.
   Future<void> _scanAndAdd() async {
     final code = await showBarcodeScanner(context, allowManual: true);
@@ -212,6 +237,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
     await AppDatabase.instance.deleteItemsByProductAndExpiry(
       product.productId,
       product.expiryKey,
+      storageLocation: product.storageLocation,
     );
     await _loadProducts();
   }
@@ -223,6 +249,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
       product.expiryKey,
       1,
       reason,
+      storageLocation: product.storageLocation,
     );
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
@@ -240,6 +267,52 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
             await AppDatabase.instance.unfinishItems(ids);
             await _loadProducts();
           },
+        ),
+      ),
+    );
+  }
+
+  /// Thaws frozen food to fridge with a fresh 3-day expiry.
+  Future<void> _thawToFridge(ProductItem product) async {
+    final newExpiry = dateOnlyString(
+      DateTime.now().add(const Duration(days: 3)),
+    );
+    await AppDatabase.instance.moveItemToStorage(
+      productId: product.productId,
+      expiryDate: product.expiryKey,
+      fromLocation: StorageLocation.freezer,
+      toLocation: StorageLocation.fridge,
+      newExpiryDate: newExpiry,
+    );
+    await _loadProducts();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Moved ${product.name} to Fridge 🧊 (expires in 3 days)',
+        ),
+      ),
+    );
+  }
+
+  /// Freezes food from fridge/pantry with a 3-month expiry.
+  Future<void> _freezeItem(ProductItem product) async {
+    final newExpiry = dateOnlyString(
+      DateTime.now().add(const Duration(days: 90)),
+    );
+    await AppDatabase.instance.moveItemToStorage(
+      productId: product.productId,
+      expiryDate: product.expiryKey,
+      fromLocation: product.storageLocation,
+      toLocation: StorageLocation.freezer,
+      newExpiryDate: newExpiry,
+    );
+    await _loadProducts();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Moved ${product.name} to Freezer ❄️ (expires in 3 months)',
         ),
       ),
     );
@@ -265,7 +338,6 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // drag handle
                 Center(
                   child: Container(
                     width: 40,
@@ -277,7 +349,6 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                     ),
                   ),
                 ),
-                // app icon + name
                 Row(
                   children: [
                     Container(
@@ -312,15 +383,38 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                   ],
                 ),
                 const SizedBox(height: 16),
-                // description
                 const Text(
-                  'Expired helps you keep track of the products in your home '
-                  'and their expiry dates. Scan a barcode or add items '
-                  'manually, and get notified before they expire so nothing '
-                  'goes to waste.',
+                  'Expired helps you keep track of your home-made food, '
+                  'meal prep, and groceries. Keep your food organized across '
+                  'Fridge, Freezer, and Pantry with zero waste.',
                   style: TextStyle(fontSize: 14, color: slate500, height: 1.5),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF6F7FB),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.shield_outlined,
+                          size: 20, color: Color(0xFF10B981)),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Zero Data Loss: Your data is safely persisted '
+                          'locally with automatic snapshot redundancy.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
                 const Divider(height: 1),
                 const SizedBox(height: 4),
                 ListTile(
@@ -393,11 +487,17 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
         .toList();
     final expired = _products.where((p) => p.daysUntilExpiry < 0).toList();
 
-    final displayedProducts = switch (_filter) {
-      _DashboardFilter.thisWeek => thisWeek,
-      _DashboardFilter.expired => expired,
-      _DashboardFilter.all => List<ProductItem>.from(_products),
-    };
+    final displayedProducts = _products.where((p) {
+      final matchesExpiry = switch (_filter) {
+        _DashboardFilter.thisWeek =>
+          p.daysUntilExpiry >= 0 && p.daysUntilExpiry <= 7,
+        _DashboardFilter.expired => p.daysUntilExpiry < 0,
+        _DashboardFilter.all => true,
+      };
+      final matchesStorage =
+          _storageFilter == null || p.storageLocation == _storageFilter;
+      return matchesExpiry && matchesStorage;
+    }).toList();
 
     const indigo = Color(0xFFFF5A3C);
     const amber = Color(0xFFF59E0B);
@@ -409,35 +509,48 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
       appBar: AppBar(
         title: const Text('Expired'),
         actions: [
-          Container(
-            margin: const EdgeInsets.only(right: 8),
-            child: IconButton(
-              onPressed: _showAboutMeDialog,
-              icon: const Icon(Icons.info_outline, size: 22),
-              style: IconButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: slate900,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
+          // Quick add without opening camera
+          IconButton(
+            tooltip: 'Add food directly',
+            onPressed: _quickAddFood,
+            icon: const Icon(Icons.add_circle_outline_rounded, size: 24),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.white,
+              foregroundColor: indigo,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
               ),
             ),
           ),
+          const SizedBox(width: 6),
+          IconButton(
+            onPressed: _showAboutMeDialog,
+            icon: const Icon(Icons.info_outline, size: 22),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.white,
+              foregroundColor: slate900,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
         ],
       ),
       body: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // header greeting
+            // Subtitle
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 16),
+              padding: const EdgeInsets.fromLTRB(20, 2, 20, 12),
               child: Text(
-                'Track products before they expire.',
-                style: TextStyle(color: slate500, fontSize: 14, height: 1.4),
+                'Track home-cooked meals & groceries before they expire.',
+                style: TextStyle(color: slate500, fontSize: 13, height: 1.4),
               ),
             ),
-            // stat cards
+
+            // Stat cards
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(
@@ -480,16 +593,63 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                 ],
               ),
             ),
+
+            // Monthly stats bar
             if (_monthStats.used > 0 || _monthStats.wasted > 0)
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
                 child: _MonthStatsBar(
                   used: _monthStats.used,
                   wasted: _monthStats.wasted,
                 ),
               ),
-            const SizedBox(height: 20),
-            // section header
+
+            const SizedBox(height: 12),
+
+            // Storage Location Segmented Bar (All | Fridge | Freezer | Pantry)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _StorageFilterChip(
+                      label: 'All Storage',
+                      isSelected: _storageFilter == null,
+                      onSelected: () => setState(() => _storageFilter = null),
+                    ),
+                    const SizedBox(width: 8),
+                    _StorageFilterChip(
+                      label: '🧊 Fridge',
+                      isSelected: _storageFilter == StorageLocation.fridge,
+                      onSelected: () => setState(
+                        () => _storageFilter = StorageLocation.fridge,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _StorageFilterChip(
+                      label: '❄️ Freezer',
+                      isSelected: _storageFilter == StorageLocation.freezer,
+                      onSelected: () => setState(
+                        () => _storageFilter = StorageLocation.freezer,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _StorageFilterChip(
+                      label: '🧺 Pantry',
+                      isSelected: _storageFilter == StorageLocation.pantry,
+                      onSelected: () => setState(
+                        () => _storageFilter = StorageLocation.pantry,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 12),
+
+            // Section header
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Row(
@@ -498,9 +658,11 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                     switch (_filter) {
                       _DashboardFilter.thisWeek => 'Expiring This Week',
                       _DashboardFilter.expired => 'Expired',
-                      _DashboardFilter.all => 'All Products',
+                      _DashboardFilter.all => _storageFilter == null
+                          ? 'All Food Items'
+                          : '${StorageLocation.displayName(_storageFilter!)} Items',
                     },
-                    style: TextStyle(
+                    style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w700,
                       color: slate900,
@@ -508,11 +670,13 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                     ),
                   ),
                   const Spacer(),
-                  if (_filter != _DashboardFilter.all)
+                  if (_filter != _DashboardFilter.all || _storageFilter != null)
                     GestureDetector(
-                      onTap: () =>
-                          setState(() => _filter = _DashboardFilter.all),
-                      child: Text(
+                      onTap: () => setState(() {
+                        _filter = _DashboardFilter.all;
+                        _storageFilter = null;
+                      }),
+                      child: const Text(
                         'Show all',
                         style: TextStyle(
                           color: indigo,
@@ -524,6 +688,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                 ],
               ),
             ),
+
             if (displayedProducts.isNotEmpty)
               const Padding(
                 padding: EdgeInsets.fromLTRB(20, 4, 20, 0),
@@ -532,8 +697,10 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                   style: TextStyle(fontSize: 11, color: slate500),
                 ),
               ),
-            const SizedBox(height: 12),
-            // list
+
+            const SizedBox(height: 10),
+
+            // Product List
             Expanded(
               child: displayedProducts.isEmpty
                   ? Center(
@@ -553,15 +720,18 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                               _DashboardFilter.thisWeek =>
                                 'Nothing expiring this week',
                               _DashboardFilter.expired => 'Nothing expired',
-                              _DashboardFilter.all => 'No products yet',
+                              _DashboardFilter.all => _storageFilter == null
+                                  ? 'No products yet'
+                                  : 'No products in ${StorageLocation.displayName(_storageFilter!)}',
                             },
-                            style: TextStyle(
+                            style: const TextStyle(
                               fontSize: 15,
                               color: slate500,
                               fontWeight: FontWeight.w500,
                             ),
                           ),
-                          if (_filter == _DashboardFilter.all) ...[
+                          if (_filter == _DashboardFilter.all &&
+                              _storageFilter == null) ...[
                             const SizedBox(height: 16),
                             OutlinedButton.icon(
                               onPressed: _scanAndAdd,
@@ -573,14 +743,14 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                       ),
                     )
                   : ListView.builder(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 88),
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 96),
                       itemCount: displayedProducts.length,
                       itemBuilder: (context, index) {
                         final product = displayedProducts[index];
                         return Dismissible(
                           key: ValueKey(
                             '${product.productId}-${product.expiryKey}-'
-                            '${product.quantity}',
+                            '${product.storageLocation}-${product.quantity}',
                           ),
                           background: const _SwipeBackground(
                             color: Color(0xFF10B981),
@@ -601,7 +771,6 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                                   ? 'used'
                                   : 'wasted',
                             );
-                            // Groups with more units stay; just reload counts.
                             if (product.quantity > 1) {
                               _loadProducts();
                               return false;
@@ -615,11 +784,24 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                           child: _ProductCard(
                             product: product,
                             onTap: () => _openProductSheet(product: product),
+                            onThawToFridge:
+                                product.storageLocation ==
+                                        StorageLocation.freezer
+                                    ? () => _thawToFridge(product)
+                                    : null,
+                            onFreeze:
+                                product.storageLocation !=
+                                        StorageLocation.freezer
+                                    ? () => _freezeItem(product)
+                                    : null,
                           ),
                         );
                       },
                     ),
             ),
+
+            // Adaptive Bottom AdMob Banner Container
+            const _BottomAdBannerPlaceholder(),
           ],
         ),
       ),
@@ -634,6 +816,104 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
           style: TextStyle(fontWeight: FontWeight.w600, letterSpacing: 0.2),
         ),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      ),
+    );
+  }
+}
+
+class _StorageFilterChip extends StatelessWidget {
+  const _StorageFilterChip({
+    required this.label,
+    required this.isSelected,
+    required this.onSelected,
+  });
+
+  final String label;
+  final bool isSelected;
+  final VoidCallback onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    const indigo = Color(0xFFFF5A3C);
+    return GestureDetector(
+      onTap: onSelected,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? indigo : Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected ? indigo : Colors.grey.shade300,
+            width: 1,
+          ),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: indigo.withValues(alpha: 0.25),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
+              : null,
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: isSelected ? Colors.white : const Color(0xFF1E2233),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BottomAdBannerPlaceholder extends StatelessWidget {
+  const _BottomAdBannerPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    // Non-intrusive container reserved for the bottom adaptive AdMob banner
+    return Container(
+      width: double.infinity,
+      height: 52,
+      margin: const EdgeInsets.only(top: 2),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border(top: BorderSide(color: Colors.grey.shade200)),
+      ),
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade200,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                'Ad',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.grey.shade600,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              'Expired Pro · Go 100% Ad-Free',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey.shade600,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -841,10 +1121,17 @@ class _SummaryCard extends StatelessWidget {
 }
 
 class _ProductCard extends StatelessWidget {
-  const _ProductCard({required this.product, required this.onTap});
+  const _ProductCard({
+    required this.product,
+    required this.onTap,
+    this.onThawToFridge,
+    this.onFreeze,
+  });
 
   final ProductItem product;
   final VoidCallback onTap;
+  final VoidCallback? onThawToFridge;
+  final VoidCallback? onFreeze;
 
   @override
   Widget build(BuildContext context) {
@@ -854,16 +1141,19 @@ class _ProductCard extends StatelessWidget {
     final accentColor = critical
         ? const Color(0xFFEF4444)
         : warning
-        ? const Color(0xFFF59E0B)
-        : const Color(0xFF10B981);
+            ? const Color(0xFFF59E0B)
+            : const Color(0xFF10B981);
     final expiryLabel = days < 0
         ? 'Expired'
         : days == 0
-        ? 'Today'
-        : days == 1
-        ? 'Tomorrow'
-        : '$days d left';
+            ? 'Today'
+            : days == 1
+                ? 'Tomorrow'
+                : '$days d left';
+
+    final locEmoji = StorageLocation.emoji(product.storageLocation);
     final details = [
+      '$locEmoji ${StorageLocation.displayName(product.storageLocation)}',
       'Qty ${product.quantity}',
       if (product.unitPrice > 0) '৳${product.unitPrice.toStringAsFixed(0)}',
       if (product.category != null && product.category!.isNotEmpty)
@@ -911,7 +1201,11 @@ class _ProductCard extends StatelessWidget {
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Icon(
-                            Icons.inventory_2_rounded,
+                            product.storageLocation == StorageLocation.freezer
+                                ? Icons.ac_unit_rounded
+                                : product.isHomemade
+                                    ? Icons.soup_kitchen_rounded
+                                    : Icons.inventory_2_rounded,
                             size: 20,
                             color: accentColor,
                           ),
@@ -923,15 +1217,47 @@ class _ProductCard extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Text(
-                                product.name,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 14,
-                                  color: Color(0xFF1E2233),
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      product.name,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 14,
+                                        color: Color(0xFF1E2233),
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (onThawToFridge != null) ...[
+                                    InkWell(
+                                      onTap: onThawToFridge,
+                                      borderRadius: BorderRadius.circular(6),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 6,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFE0F2FE),
+                                          borderRadius:
+                                              BorderRadius.circular(6),
+                                        ),
+                                        child: const Text(
+                                          '🧊 Thaw',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFF0284C7),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                  ],
+                                ],
                               ),
                               const SizedBox(height: 4),
                               Row(
@@ -1044,9 +1370,6 @@ class _ScannerSheet extends StatefulWidget {
 
 class _ScannerSheetState extends State<_ScannerSheet> {
   final MobileScannerController _controller = MobileScannerController();
-
-  // onDetect fires repeatedly while a code is in view; only handle it once so
-  // we never pop more than this sheet.
   bool _handled = false;
 
   @override
@@ -1113,11 +1436,19 @@ class _ScannerSheetState extends State<_ScannerSheet> {
   }
 }
 
-const _quickExpiryOptions = <({String label, int days})>[
+/// Quick expiry options tailored for fridge vs freezer
+const _fridgeExpiryOptions = <({String label, int days})>[
+  (label: '2 days', days: 2),
   (label: '3 days', days: 3),
+  (label: '5 days', days: 5),
   (label: '1 week', days: 7),
   (label: '2 weeks', days: 14),
   (label: '1 month', days: 30),
+];
+
+const _freezerExpiryOptions = <({String label, int days})>[
+  (label: '1 month', days: 30),
+  (label: '2 months', days: 60),
   (label: '3 months', days: 90),
   (label: '6 months', days: 180),
   (label: '1 year', days: 365),
@@ -1140,6 +1471,7 @@ class ProductForm extends StatefulWidget {
     required this.onSave,
     this.product,
     this.initialBarcode,
+    this.initialLocation,
     this.onDelete,
     super.key,
   });
@@ -1147,6 +1479,7 @@ class ProductForm extends StatefulWidget {
   final Future<void> Function() onSave;
   final ProductItem? product;
   final String? initialBarcode;
+  final String? initialLocation;
   final Future<void> Function()? onDelete;
 
   @override
@@ -1162,10 +1495,12 @@ class _ProductFormState extends State<ProductForm> {
   List<CategoryRecord> _categories = const [];
   bool _isLoadingCategories = true;
   bool _isSaving = false;
+  bool _isLookingUpOnline = false;
   String? _loadError;
   late DateTime expiryDate;
+  late String storageLocation;
+  bool isHomemade = true;
 
-  // FocusNodes to control next field and skip category autoexpand
   late final FocusNode barcodeFocusNode;
   late final FocusNode nameFocusNode;
   FocusNode? categoryFocusNode;
@@ -1178,7 +1513,6 @@ class _ProductFormState extends State<ProductForm> {
     _loadCategories();
     final product = widget.product;
     final barcode = product?.barcode ?? widget.initialBarcode ?? '';
-    // Auto-generated ids for barcode-less items are hidden from the user.
     barcodeController = TextEditingController(
       text: barcode.startsWith(_localBarcodePrefix) ? '' : barcode,
     );
@@ -1190,19 +1524,25 @@ class _ProductFormState extends State<ProductForm> {
       text: product?.quantity.toString() ?? '1',
     );
 
+    storageLocation = product?.storageLocation ??
+        widget.initialLocation ??
+        StorageLocation.fridge;
+    isHomemade = product?.isHomemade ?? true;
+
     final expiry = product?.expiryDate;
     expiryDate = expiry != null
         ? DateTime(expiry.year, expiry.month, expiry.day)
-        : _today().add(const Duration(days: 7));
+        : _today().add(
+            Duration(days: storageLocation == StorageLocation.freezer ? 90 : 7),
+          );
 
     barcodeFocusNode = FocusNode();
     nameFocusNode = FocusNode();
-    // categoryFocusNode is managed by Autocomplete
     priceFocusNode = FocusNode();
     quantityFocusNode = FocusNode();
 
     if (product == null && barcode.isNotEmpty) {
-      _applyKnownProduct(barcode);
+      _applyBarcodeInfo(barcode);
     }
   }
 
@@ -1215,7 +1555,7 @@ class _ProductFormState extends State<ProductForm> {
         _isLoadingCategories = false;
         _loadError = null;
       });
-    } catch (error) {
+    } catch (_) {
       if (!mounted) return;
       setState(() {
         _categories = const [];
@@ -1225,31 +1565,60 @@ class _ProductFormState extends State<ProductForm> {
     }
   }
 
-  /// Pre-fills the form from a previously saved product with [barcode].
-  Future<void> _applyKnownProduct(String barcode) async {
+  /// Checks local DB first; if not found, automatically queries Open Food Facts API!
+  Future<void> _applyBarcodeInfo(String barcode) async {
     try {
+      // 1. Local database lookup
       final record = await AppDatabase.instance.findProductByBarcode(barcode);
       if (!mounted) return;
-      if (record == null) {
-        nameFocusNode.requestFocus();
+      if (record != null) {
+        final categoryId = record.categoryId;
+        final category = categoryId == null
+            ? null
+            : await AppDatabase.instance.getCategoryById(categoryId);
+        if (!mounted) return;
+        setState(() {
+          nameController.text = record.name;
+          priceController.text = _formatPrice(record.price);
+          storageLocation = record.defaultLocation;
+          isHomemade = record.isHomemade == 1;
+          if (category != null) categoryController?.text = category.name;
+          final shelfDays = record.defaultShelfDays;
+          if (shelfDays != null && shelfDays > 0) {
+            expiryDate = _today().add(Duration(days: shelfDays));
+          }
+        });
         return;
       }
-      final categoryId = record.categoryId;
-      final category = categoryId == null
-          ? null
-          : await AppDatabase.instance.getCategoryById(categoryId);
+
+      // 2. Open Food Facts Online Lookup for new products
+      setState(() => _isLookingUpOnline = true);
+      final onlineResult = await BarcodeService.instance.lookupOnline(barcode);
       if (!mounted) return;
-      setState(() {
-        nameController.text = record.name;
-        priceController.text = _formatPrice(record.price);
-        if (category != null) categoryController?.text = category.name;
-        final shelfDays = record.defaultShelfDays;
-        if (shelfDays != null && shelfDays > 0) {
-          expiryDate = _today().add(Duration(days: shelfDays));
-        }
-      });
+      setState(() => _isLookingUpOnline = false);
+
+      if (onlineResult != null) {
+        setState(() {
+          nameController.text = onlineResult.name;
+          isHomemade = false; // scanned grocery product
+          if (onlineResult.category != null) {
+            categoryController?.text = onlineResult.category!;
+          }
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Found: ${onlineResult.name} ✨'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      } else {
+        nameFocusNode.requestFocus();
+      }
     } catch (_) {
-      if (mounted) nameFocusNode.requestFocus();
+      if (mounted) {
+        setState(() => _isLookingUpOnline = false);
+        nameFocusNode.requestFocus();
+      }
     }
   }
 
@@ -1261,7 +1630,6 @@ class _ProductFormState extends State<ProductForm> {
     quantityController.dispose();
     barcodeFocusNode.dispose();
     nameFocusNode.dispose();
-    // categoryFocusNode is disposed by Autocomplete
     priceFocusNode.dispose();
     quantityFocusNode.dispose();
     super.dispose();
@@ -1271,7 +1639,7 @@ class _ProductFormState extends State<ProductForm> {
     final code = await showBarcodeScanner(context);
     if (code == null || code.isEmpty || !mounted) return;
     barcodeController.text = code;
-    await _applyKnownProduct(code);
+    await _applyBarcodeInfo(code);
   }
 
   Future<void> _confirmDelete() async {
@@ -1281,7 +1649,7 @@ class _ProductFormState extends State<ProductForm> {
         title: const Text('Delete product?'),
         content: Text(
           'This removes all ${widget.product!.quantity} unit(s) of '
-          '${widget.product!.name} with this expiry date.',
+          '${widget.product!.name} from ${StorageLocation.displayName(widget.product!.storageLocation)}.',
         ),
         actions: [
           TextButton(
@@ -1318,7 +1686,7 @@ class _ProductFormState extends State<ProductForm> {
       final barcode = enteredBarcode.isNotEmpty
           ? enteredBarcode
           : widget.product?.barcode ??
-                '$_localBarcodePrefix${DateTime.now().microsecondsSinceEpoch}';
+              '$_localBarcodePrefix${DateTime.now().microsecondsSinceEpoch}';
       final price = double.tryParse(priceController.text) ?? 0.0;
       final quantity = int.tryParse(quantityController.text) ?? 1;
       final categoryName = categoryController?.text.trim() ?? '';
@@ -1339,6 +1707,8 @@ class _ProductFormState extends State<ProductForm> {
           name: name,
           price: price,
           categoryId: category?.id,
+          defaultLocation: storageLocation,
+          isHomemade: isHomemade ? 1 : 0,
           defaultShelfDays: shelfDays > 0
               ? shelfDays
               : existingProduct?.defaultShelfDays,
@@ -1349,11 +1719,10 @@ class _ProductFormState extends State<ProductForm> {
 
       final original = widget.product;
       if (original != null) {
-        // Remove the old group by its original product, so changing the
-        // barcode doesn't leave a duplicate behind.
         await AppDatabase.instance.deleteItemsByProductAndExpiry(
           original.productId,
           original.expiryKey,
+          storageLocation: original.storageLocation,
         );
       }
 
@@ -1367,6 +1736,10 @@ class _ProductFormState extends State<ProductForm> {
             purchaseDate: purchaseDate.toIso8601String(),
             entryDate: now.toIso8601String(),
             expiryDate: dateOnlyString(expiryDate),
+            storageLocation: storageLocation,
+            cookedDate: isHomemade ? now.toIso8601String() : null,
+            portionCount: 1,
+            isHomemade: isHomemade ? 1 : 0,
             finished: 0,
             createdAt: now.toIso8601String(),
           ),
@@ -1386,6 +1759,9 @@ class _ProductFormState extends State<ProductForm> {
     const slate500 = Color(0xFF6B7280);
     final today = _today();
     final pickerFirstDate = expiryDate.isBefore(today) ? expiryDate : today;
+    final quickOptions = storageLocation == StorageLocation.freezer
+        ? _freezerExpiryOptions
+        : _fridgeExpiryOptions;
 
     return SingleChildScrollView(
       child: Column(
@@ -1412,6 +1788,13 @@ class _ProductFormState extends State<ProductForm> {
                   letterSpacing: -0.5,
                 ),
               ),
+              const Spacer(),
+              if (_isLookingUpOnline)
+                const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
             ],
           ),
           const SizedBox(height: 4),
@@ -1419,65 +1802,102 @@ class _ProductFormState extends State<ProductForm> {
             padding: const EdgeInsets.only(left: 14),
             child: Text(
               widget.product == null
-                  ? 'Fill in the details below to add a product.'
-                  : 'Update the saved product details.',
+                  ? 'Record home-cooked meals, meal prep, or scanned foods.'
+                  : 'Update saved food details.',
               style: const TextStyle(color: slate500, fontSize: 13),
             ),
           ),
-          const SizedBox(height: 20),
-          if (_loadError != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(
-                _loadError!,
-                style: const TextStyle(color: Color(0xFFF59E0B)),
-              ),
-            ),
-          if (_isLoadingCategories)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Center(child: CircularProgressIndicator()),
-            ),
-          TextField(
-            controller: barcodeController,
-            focusNode: barcodeFocusNode,
-            onSubmitted: (_) => nameFocusNode.requestFocus(),
-            decoration: InputDecoration(
-              labelText: 'Barcode (optional)',
-              border: const OutlineInputBorder(),
-              suffixIcon: IconButton(
-                tooltip: 'Scan barcode',
-                onPressed: _openBarcodeScanner,
-                icon: const Icon(Icons.qr_code_scanner_rounded),
-              ),
+          const SizedBox(height: 16),
+
+          // Storage Location Selector (Fridge | Freezer | Pantry)
+          const Text(
+            'Storage Location',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: slate900,
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              for (final loc in StorageLocation.all) ...[
+                Expanded(
+                  child: ChoiceChip(
+                    label: Center(
+                      child: Text(
+                        '${StorageLocation.emoji(loc)} ${StorageLocation.displayName(loc)}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: storageLocation == loc
+                              ? FontWeight.w700
+                              : FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    selected: storageLocation == loc,
+                    onSelected: (selected) {
+                      if (selected) {
+                        setState(() {
+                          storageLocation = loc;
+                          // Default expiry adjustment
+                          if (loc == StorageLocation.freezer) {
+                            expiryDate = today.add(const Duration(days: 90));
+                          } else if (loc == StorageLocation.pantry) {
+                            expiryDate = today.add(const Duration(days: 14));
+                          } else {
+                            expiryDate = today.add(const Duration(days: 4));
+                          }
+                        });
+                      }
+                    },
+                  ),
+                ),
+                if (loc != StorageLocation.all.last) const SizedBox(width: 6),
+              ],
+            ],
+          ),
+          const SizedBox(height: 14),
+
+          // Product Name
           TextField(
             controller: nameController,
             focusNode: nameFocusNode,
             textCapitalization: TextCapitalization.sentences,
             onSubmitted: (_) => priceFocusNode.requestFocus(),
-            decoration: const InputDecoration(
-              labelText: 'Product name',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: 'Food / Product name',
+              hintText: 'e.g. Lentil Soup, Cooked Chicken, Lasagna',
+              border: const OutlineInputBorder(),
+              suffixIcon: _isLookingUpOnline
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : null,
             ),
           ),
           const SizedBox(height: 12),
-          const Text(
-            'Expires in',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: slate900,
-            ),
+
+          // Expiry options
+          Row(
+            children: [
+              Text(
+                'Expires in (${StorageLocation.displayName(storageLocation)})',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: slate900,
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 6),
           Wrap(
             spacing: 6,
             runSpacing: 6,
             children: [
-              for (final option in _quickExpiryOptions)
+              for (final option in quickOptions)
                 ChoiceChip(
                   label: Text(option.label),
                   selected:
@@ -1511,11 +1931,32 @@ class _ProductFormState extends State<ProductForm> {
                 }
               },
               icon: const Icon(Icons.calendar_month_outlined),
-              label: Text('Expiry date: ${dateOnlyString(expiryDate)}'),
+              label: Text('Custom Expiry: ${dateOnlyString(expiryDate)}'),
             ),
           ),
           const SizedBox(height: 12),
 
+          // Barcode (Optional)
+          TextField(
+            controller: barcodeController,
+            focusNode: barcodeFocusNode,
+            onSubmitted: (val) {
+              if (val.isNotEmpty) _applyBarcodeInfo(val);
+              nameFocusNode.requestFocus();
+            },
+            decoration: InputDecoration(
+              labelText: 'Barcode (optional for store-bought)',
+              border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                tooltip: 'Scan barcode to auto-fill name',
+                onPressed: _openBarcodeScanner,
+                icon: const Icon(Icons.qr_code_scanner_rounded),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Category
           Autocomplete<String>(
             initialValue: TextEditingValue(
               text: widget.product?.category ?? '',
@@ -1528,28 +1969,30 @@ class _ProductFormState extends State<ProductForm> {
                   .map((category) => category.name)
                   .where(
                     (name) => name.toLowerCase().contains(
-                      textEditingValue.text.toLowerCase(),
-                    ),
+                          textEditingValue.text.toLowerCase(),
+                        ),
                   )
                   .take(5);
             },
             onSelected: (value) => categoryController?.text = value,
             fieldViewBuilder:
                 (context, controller, focusNode, onFieldSubmitted) {
-                  categoryController = controller;
-                  categoryFocusNode = focusNode;
-                  return TextField(
-                    controller: controller,
-                    focusNode: focusNode,
-                    decoration: const InputDecoration(
-                      labelText: 'Category',
-                      border: OutlineInputBorder(),
-                      hintText: 'Type to search categories',
-                    ),
-                  );
-                },
+              categoryController = controller;
+              categoryFocusNode = focusNode;
+              return TextField(
+                controller: controller,
+                focusNode: focusNode,
+                decoration: const InputDecoration(
+                  labelText: 'Category',
+                  border: OutlineInputBorder(),
+                  hintText: 'e.g. Leftovers, Meal Prep, Soups',
+                ),
+              );
+            },
           ),
           const SizedBox(height: 12),
+
+          // Price & Quantity / Portions
           Row(
             children: [
               Expanded(
@@ -1561,7 +2004,7 @@ class _ProductFormState extends State<ProductForm> {
                   ),
                   onSubmitted: (_) => quantityFocusNode.requestFocus(),
                   decoration: const InputDecoration(
-                    labelText: 'Unit price',
+                    labelText: 'Cost / Price (optional)',
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -1586,8 +2029,8 @@ class _ProductFormState extends State<ProductForm> {
                                   int.tryParse(quantityController.text) ?? 1;
                               if (current > 1) {
                                 setState(() {
-                                  quantityController.text = (current - 1)
-                                      .toString();
+                                  quantityController.text =
+                                      (current - 1).toString();
                                 });
                               }
                             },
@@ -1610,8 +2053,8 @@ class _ProductFormState extends State<ProductForm> {
                               final current =
                                   int.tryParse(quantityController.text) ?? 1;
                               setState(() {
-                                quantityController.text = (current + 1)
-                                    .toString();
+                                quantityController.text =
+                                    (current + 1).toString();
                               });
                             },
                           ),
@@ -1624,6 +2067,8 @@ class _ProductFormState extends State<ProductForm> {
             ],
           ),
           const SizedBox(height: 20),
+
+          // Save button
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
@@ -1681,6 +2126,11 @@ class ProductItem {
     required this.unitPrice,
     required this.quantity,
     this.category,
+    this.storageLocation = StorageLocation.fridge,
+    this.cookedDate,
+    this.portionCount = 1,
+    this.isHomemade = true,
+    this.notes,
   });
 
   final int productId;
@@ -1688,14 +2138,16 @@ class ProductItem {
   final String name;
   final String? category;
   final DateTime purchaseDate;
-
-  /// Expiry value exactly as stored in the DB; used to match the item group.
   final String expiryKey;
   final DateTime expiryDate;
   final double unitPrice;
   final int quantity;
+  final String storageLocation;
+  final DateTime? cookedDate;
+  final int portionCount;
+  final bool isHomemade;
+  final String? notes;
 
-  /// Whole calendar days from today until expiry (negative once expired).
   int get daysUntilExpiry {
     final now = DateTime.now();
     return DateTime.utc(

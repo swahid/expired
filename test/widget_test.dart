@@ -235,4 +235,93 @@ void main() {
     expect(today.body, 'Milk expires tomorrow (+1 more)');
     expect(digests[DateTime(2026, 10, 20)]!.body, 'Eggs expires today');
   });
+
+  test('upgrades a v2 database to v3 with zero data loss', () async {
+    final path = join(await getDatabasesPath(), 'expired_local.db');
+    final v2 = await openDatabase(
+      path,
+      version: 2,
+      onCreate: (db, _) async {
+        await db.execute(
+          'CREATE TABLE product (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+          'barcode TEXT UNIQUE NOT NULL, name TEXT NOT NULL, '
+          'price REAL NOT NULL DEFAULT 0, categoryId INTEGER, '
+          'defaultShelfDays INTEGER, createdAt TEXT NOT NULL)',
+        );
+        await db.execute(
+          'CREATE TABLE category (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+          'name TEXT UNIQUE NOT NULL, createdAt TEXT NOT NULL)',
+        );
+        await db.execute(
+          'CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, '
+          'productId INTEGER NOT NULL, categoryId INTEGER, '
+          'purchaseDate TEXT NOT NULL, entryDate TEXT NOT NULL, '
+          'expiryDate TEXT NOT NULL DEFAULT "", finished INTEGER NOT NULL DEFAULT 0, '
+          'finishedAt TEXT, finishReason TEXT, createdAt TEXT NOT NULL)',
+        );
+      },
+    );
+    await v2.insert('product', {
+      'barcode': 'chili-1',
+      'name': 'Homemade Chili',
+      'price': 150,
+      'createdAt': '2026-06-01T00:00:00.000',
+    });
+    await v2.insert('items', {
+      'productId': 1,
+      'purchaseDate': '2026-06-01T00:00:00.000',
+      'entryDate': '2026-06-01T00:00:00.000',
+      'expiryDate': '2026-06-15',
+      'finished': 0,
+      'createdAt': '2026-06-01T00:00:00.000',
+    });
+    await v2.close();
+
+    // Trigger upgrade to v3
+    final items = await AppDatabase.instance.getDashboardItems();
+    expect(items.single['name'], 'Homemade Chili');
+    expect(items.single['expiryDate'], '2026-06-15');
+    // New v3 column defaulted gracefully
+    expect(items.single['storageLocation'], 'fridge');
+  });
+
+  test('moveItemToStorage thaws item from freezer to fridge', () async {
+    await addItems(
+      barcode: 'curry-1',
+      name: 'Frozen Curry',
+      expiry: daysFromToday(90),
+    );
+    final initial = await AppDatabase.instance.getDashboardItems();
+    final productId = initial.first['productId'] as int;
+
+    // Move to freezer first
+    await AppDatabase.instance.moveItemToStorage(
+      productId: productId,
+      expiryDate: initial.first['expiryDate'] as String,
+      fromLocation: StorageLocation.fridge,
+      toLocation: StorageLocation.freezer,
+      newExpiryDate: '2026-12-31',
+    );
+
+    var items = await AppDatabase.instance.getDashboardItems(
+      storageLocation: StorageLocation.freezer,
+    );
+    expect(items, hasLength(1));
+    expect(items.first['name'], 'Frozen Curry');
+
+    // Thaw to fridge
+    await AppDatabase.instance.moveItemToStorage(
+      productId: productId,
+      expiryDate: '2026-12-31',
+      fromLocation: StorageLocation.freezer,
+      toLocation: StorageLocation.fridge,
+      newExpiryDate: '2026-10-15',
+    );
+
+    items = await AppDatabase.instance.getDashboardItems(
+      storageLocation: StorageLocation.fridge,
+    );
+    expect(items, hasLength(1));
+    expect(items.first['expiryDate'], '2026-10-15');
+  });
 }

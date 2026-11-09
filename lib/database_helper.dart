@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -6,6 +7,39 @@ String dateOnlyString(DateTime date) =>
     '${date.year.toString().padLeft(4, '0')}-'
     '${date.month.toString().padLeft(2, '0')}-'
     '${date.day.toString().padLeft(2, '0')}';
+
+/// Valid storage locations for food tracking.
+class StorageLocation {
+  static const fridge = 'fridge';
+  static const freezer = 'freezer';
+  static const pantry = 'pantry';
+
+  static const all = [fridge, freezer, pantry];
+
+  static String displayName(String location) {
+    switch (location.toLowerCase()) {
+      case freezer:
+        return 'Freezer';
+      case pantry:
+        return 'Pantry';
+      case fridge:
+      default:
+        return 'Fridge';
+    }
+  }
+
+  static String emoji(String location) {
+    switch (location.toLowerCase()) {
+      case freezer:
+        return '❄️';
+      case pantry:
+        return '🧺';
+      case fridge:
+      default:
+        return '🧊';
+    }
+  }
+}
 
 class AppDatabase {
   AppDatabase._();
@@ -33,9 +67,23 @@ class AppDatabase {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, 'expired_local.db');
 
+    // SAFEGUARD: If the database exists, create a pre-migration snapshot before openDatabase!
+    try {
+      final dbFile = File(path);
+      if (await dbFile.exists()) {
+        final backupPath = join(dbPath, 'expired_local_backup_v2.db');
+        final backupFile = File(backupPath);
+        if (!await backupFile.exists()) {
+          await dbFile.copy(backupPath);
+        }
+      }
+    } catch (_) {
+      // Best-effort safety snapshot; never crash startup
+    }
+
     return openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
       onOpen: (db) async => _seedDefaultCategories(db),
@@ -52,6 +100,45 @@ class AppDatabase {
       await db.execute(
         'UPDATE items SET expiryDate = substr(expiryDate, 1, 10) '
         'WHERE length(expiryDate) > 10',
+      );
+    }
+    if (oldVersion < 3) {
+      // Storage location: 'fridge' (default), 'freezer', 'pantry'
+      await _addColumnIfMissing(
+        db,
+        'items',
+        'storageLocation',
+        'TEXT NOT NULL DEFAULT "fridge"',
+      );
+      // Date food was cooked/prepared (ISO-8601 string, defaults to entryDate)
+      await _addColumnIfMissing(db, 'items', 'cookedDate', 'TEXT');
+      // Portions / servings remaining (default 1)
+      await _addColumnIfMissing(
+        db,
+        'items',
+        'portionCount',
+        'INTEGER NOT NULL DEFAULT 1',
+      );
+      // Flags homemade vs store-bought item (1 = homemade, 0 = store-bought)
+      await _addColumnIfMissing(
+        db,
+        'items',
+        'isHomemade',
+        'INTEGER NOT NULL DEFAULT 1',
+      );
+      // Optional notes (e.g. "spicy", "reheat to 75C")
+      await _addColumnIfMissing(db, 'items', 'notes', 'TEXT');
+      await _addColumnIfMissing(
+        db,
+        'product',
+        'isHomemade',
+        'INTEGER NOT NULL DEFAULT 1',
+      );
+      await _addColumnIfMissing(
+        db,
+        'product',
+        'defaultLocation',
+        'TEXT NOT NULL DEFAULT "fridge"',
       );
     }
   }
@@ -76,6 +163,8 @@ class AppDatabase {
         price REAL NOT NULL DEFAULT 0,
         categoryId INTEGER,
         defaultShelfDays INTEGER,
+        defaultLocation TEXT NOT NULL DEFAULT "fridge",
+        isHomemade INTEGER NOT NULL DEFAULT 1,
         createdAt TEXT NOT NULL
       )
     ''');
@@ -96,6 +185,11 @@ class AppDatabase {
         purchaseDate TEXT NOT NULL,
         entryDate TEXT NOT NULL,
         expiryDate TEXT NOT NULL DEFAULT "",
+        storageLocation TEXT NOT NULL DEFAULT "fridge",
+        cookedDate TEXT,
+        portionCount INTEGER NOT NULL DEFAULT 1,
+        isHomemade INTEGER NOT NULL DEFAULT 1,
+        notes TEXT,
         finished INTEGER NOT NULL DEFAULT 0,
         finishedAt TEXT,
         finishReason TEXT,
@@ -110,6 +204,9 @@ class AppDatabase {
 
   Future<void> _seedDefaultCategories(Database db) async {
     final defaultCategories = [
+      {'name': 'Leftovers', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Meal Prep', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Soups & Stews', 'createdAt': '2026-06-13T00:00:00.000'},
       {'name': 'Food', 'createdAt': '2026-06-13T00:00:00.000'},
       {'name': 'Dairy', 'createdAt': '2026-06-13T00:00:00.000'},
       {'name': 'Meat & Seafood', 'createdAt': '2026-06-13T00:00:00.000'},
@@ -118,12 +215,11 @@ class AppDatabase {
       {'name': 'Beverages', 'createdAt': '2026-06-13T00:00:00.000'},
       {'name': 'Frozen Foods', 'createdAt': '2026-06-13T00:00:00.000'},
       {'name': 'Snacks', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Sauces & Condiments', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Ferments & Pickles', 'createdAt': '2026-06-13T00:00:00.000'},
+      {'name': 'Baby Care', 'createdAt': '2026-06-13T00:00:00.000'},
       {'name': 'Medicine', 'createdAt': '2026-06-13T00:00:00.000'},
       {'name': 'Supplements', 'createdAt': '2026-06-13T00:00:00.000'},
-      {'name': 'Cosmetics', 'createdAt': '2026-06-13T00:00:00.000'},
-      {'name': 'Baby Care', 'createdAt': '2026-06-13T00:00:00.000'},
-      {'name': 'Pet Care', 'createdAt': '2026-06-13T00:00:00.000'},
-      {'name': 'Household', 'createdAt': '2026-06-13T00:00:00.000'},
       {'name': 'Other', 'createdAt': '2026-06-13T00:00:00.000'},
     ];
 
@@ -164,27 +260,57 @@ class AppDatabase {
     }
   }
 
-  Future<List<Map<String, dynamic>>> getDashboardItems() async {
+  Future<List<Map<String, dynamic>>> getDashboardItems({
+    String? storageLocation,
+  }) async {
     return _withRetry((db) async {
+      final hasLocationFilter =
+          storageLocation != null && storageLocation.isNotEmpty;
+      final whereClause = hasLocationFilter
+          ? 'WHERE i.finished = 0 AND i.storageLocation = ?'
+          : 'WHERE i.finished = 0';
+      final whereArgs = hasLocationFilter ? [storageLocation] : null;
+
       return await db.rawQuery('''
         SELECT
           p.id as productId,
           p.barcode,
           p.name,
           p.price,
+          p.isHomemade as productIsHomemade,
           MIN(i.purchaseDate) as purchaseDate,
+          MIN(i.cookedDate) as cookedDate,
           i.expiryDate as expiryDate,
+          COALESCE(i.storageLocation, 'fridge') as storageLocation,
           COUNT(i.id) as quantity,
+          SUM(COALESCE(i.portionCount, 1)) as totalPortions,
+          MAX(COALESCE(i.isHomemade, 1)) as isHomemade,
+          MAX(i.notes) as notes,
           MAX(c.name) as category
         FROM product p
         INNER JOIN items i ON i.productId = p.id
         LEFT JOIN category c ON c.id = i.categoryId
-        WHERE i.finished = 0
-        GROUP BY p.id, i.expiryDate
+        $whereClause
+        GROUP BY p.id, i.expiryDate, COALESCE(i.storageLocation, 'fridge')
         ORDER BY i.expiryDate ASC
-      ''');
+      ''', whereArgs);
     });
   }
+
+  /// Top frequently/recently cooked homemade foods for the "Cook Again" chip bar.
+  Future<List<ProductRecord>> getFrequentDishes({int limit = 8}) async =>
+      _withRetry((db) async {
+        final rows = await db.rawQuery('''
+          SELECT p.*, COUNT(i.id) as usageCount
+          FROM product p
+          JOIN items i ON i.productId = p.id
+          WHERE p.isHomemade = 1
+          GROUP BY p.id
+          ORDER BY usageCount DESC, p.id DESC
+          LIMIT ?
+        ''', [limit]);
+        return rows.map(ProductRecord.fromMap).toList();
+      });
 
   Future<ProductRecord?> findProductByBarcode(String barcode) async =>
       _withRetry((db) async {
@@ -250,13 +376,20 @@ class AppDatabase {
     int productId,
     String expiryDate,
     int count,
-    String reason,
-  ) async => _withRetry((db) async {
+    String reason, {
+    String? storageLocation,
+  }) async => _withRetry((db) async {
+    final whereArgs = <dynamic>[productId, expiryDate];
+    var where = 'productId = ? AND expiryDate = ? AND finished = 0';
+    if (storageLocation != null && storageLocation.isNotEmpty) {
+      where += ' AND COALESCE(storageLocation, "fridge") = ?';
+      whereArgs.add(storageLocation);
+    }
     final rows = await db.query(
       'items',
       columns: ['id'],
-      where: 'productId = ? AND expiryDate = ? AND finished = 0',
-      whereArgs: [productId, expiryDate],
+      where: where,
+      whereArgs: whereArgs,
       limit: count,
     );
     final ids = rows.map((row) => row['id'] as int).toList();
@@ -274,6 +407,27 @@ class AppDatabase {
     return ids;
   });
 
+  /// Moves unfinished items from [fromLocation] to [toLocation] and updates their [expiryDate].
+  /// Used for "Thaw / Move to Fridge" or "Move to Freezer".
+  Future<void> moveItemToStorage({
+    required int productId,
+    required String expiryDate,
+    required String fromLocation,
+    required String toLocation,
+    required String newExpiryDate,
+  }) async => _withRetry((db) async {
+    await db.update(
+      'items',
+      {
+        'storageLocation': toLocation,
+        'expiryDate': newExpiryDate,
+      },
+      where:
+          'productId = ? AND expiryDate = ? AND COALESCE(storageLocation, "fridge") = ? AND finished = 0',
+      whereArgs: [productId, expiryDate, fromLocation],
+    );
+  });
+
   Future<void> unfinishItems(List<int> ids) async => _withRetry((db) async {
     if (ids.isEmpty) return;
     await db.update(
@@ -285,14 +439,13 @@ class AppDatabase {
   });
 
   /// Total value of items marked used / wasted during [month].
-  Future<({double used, double wasted})> getMonthlyStats(
-    DateTime month,
-  ) async => _withRetry((db) async {
+  Future<({double used, double wasted, int usedCount, int wastedCount})>
+  getMonthlyStats(DateTime month) async => _withRetry((db) async {
     final start = DateTime(month.year, month.month);
     final end = DateTime(month.year, month.month + 1);
     final rows = await db.rawQuery(
       '''
-          SELECT i.finishReason as reason, SUM(p.price) as total
+          SELECT i.finishReason as reason, SUM(p.price) as total, COUNT(i.id) as count
           FROM items i
           JOIN product p ON p.id = i.productId
           WHERE i.finished = 1 AND i.finishedAt >= ? AND i.finishedAt < ?
@@ -304,7 +457,17 @@ class AppDatabase {
         (rows.where((r) => r['reason'] == reason).firstOrNull?['total'] as num?)
             ?.toDouble() ??
         0;
-    return (used: totalFor('used'), wasted: totalFor('wasted'));
+    int countFor(String reason) =>
+        (rows.where((r) => r['reason'] == reason).firstOrNull?['count']
+                as num?)
+            ?.toInt() ??
+        0;
+    return (
+      used: totalFor('used'),
+      wasted: totalFor('wasted'),
+      usedCount: countFor('used'),
+      wastedCount: countFor('wasted'),
+    );
   });
 
   Future<CategoryRecord?> getCategoryById(int id) async =>
@@ -320,13 +483,16 @@ class AppDatabase {
 
   Future<void> deleteItemsByProductAndExpiry(
     int productId,
-    String expiryDate,
-  ) async => _withRetry((db) async {
-    await db.delete(
-      'items',
-      where: 'productId = ? AND expiryDate = ?',
-      whereArgs: [productId, expiryDate],
-    );
+    String expiryDate, {
+    String? storageLocation,
+  }) async => _withRetry((db) async {
+    final whereArgs = <dynamic>[productId, expiryDate];
+    var where = 'productId = ? AND expiryDate = ?';
+    if (storageLocation != null && storageLocation.isNotEmpty) {
+      where += ' AND COALESCE(storageLocation, "fridge") = ?';
+      whereArgs.add(storageLocation);
+    }
+    await db.delete('items', where: where, whereArgs: whereArgs);
   });
 
   Future<void> close() async {
@@ -357,6 +523,8 @@ class ProductRecord {
     required this.createdAt,
     this.categoryId,
     this.defaultShelfDays,
+    this.defaultLocation = StorageLocation.fridge,
+    this.isHomemade = 1,
   });
 
   final int? id;
@@ -369,6 +537,12 @@ class ProductRecord {
   /// Days between adding and expiry last time; used to pre-fill re-scans.
   final int? defaultShelfDays;
 
+  /// Default storage location: 'fridge', 'freezer', 'pantry'
+  final String defaultLocation;
+
+  /// 1 = homemade, 0 = store bought
+  final int isHomemade;
+
   Map<String, dynamic> toMap() => {
     'id': id,
     'barcode': barcode,
@@ -376,6 +550,8 @@ class ProductRecord {
     'price': price,
     'categoryId': categoryId,
     'defaultShelfDays': defaultShelfDays,
+    'defaultLocation': defaultLocation,
+    'isHomemade': isHomemade,
     'createdAt': createdAt,
   }..removeWhere((key, value) => key == 'id' && value == null);
 
@@ -386,6 +562,8 @@ class ProductRecord {
     price: (map['price'] as num).toDouble(),
     categoryId: map['categoryId'] as int?,
     defaultShelfDays: map['defaultShelfDays'] as int?,
+    defaultLocation: map['defaultLocation'] as String? ?? StorageLocation.fridge,
+    isHomemade: map['isHomemade'] as int? ?? 1,
     createdAt: map['createdAt'] as String,
   );
 }
@@ -416,6 +594,11 @@ class InventoryItemRecord {
     required this.purchaseDate,
     required this.entryDate,
     required this.expiryDate,
+    this.storageLocation = StorageLocation.fridge,
+    this.cookedDate,
+    this.portionCount = 1,
+    this.isHomemade = 1,
+    this.notes,
     required this.finished,
     required this.createdAt,
   });
@@ -426,6 +609,11 @@ class InventoryItemRecord {
   final String purchaseDate;
   final String entryDate;
   final String expiryDate;
+  final String storageLocation;
+  final String? cookedDate;
+  final int portionCount;
+  final int isHomemade;
+  final String? notes;
   final int finished;
   final String createdAt;
 
@@ -436,6 +624,11 @@ class InventoryItemRecord {
     'purchaseDate': purchaseDate,
     'entryDate': entryDate,
     'expiryDate': expiryDate,
+    'storageLocation': storageLocation,
+    'cookedDate': cookedDate,
+    'portionCount': portionCount,
+    'isHomemade': isHomemade,
+    'notes': notes,
     'finished': finished,
     'createdAt': createdAt,
   }..removeWhere((key, value) => key == 'id' && value == null);
@@ -448,6 +641,12 @@ class InventoryItemRecord {
         purchaseDate: map['purchaseDate'] as String,
         entryDate: map['entryDate'] as String,
         expiryDate: map['expiryDate'] as String? ?? '',
+        storageLocation:
+            map['storageLocation'] as String? ?? StorageLocation.fridge,
+        cookedDate: map['cookedDate'] as String?,
+        portionCount: map['portionCount'] as int? ?? 1,
+        isHomemade: map['isHomemade'] as int? ?? 1,
+        notes: map['notes'] as String?,
         finished: map['finished'] as int? ?? 0,
         createdAt: map['createdAt'] as String,
       );
