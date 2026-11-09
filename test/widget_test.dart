@@ -324,4 +324,38 @@ void main() {
     expect(items, hasLength(1));
     expect(items.first['expiryDate'], '2026-10-15');
   });
+
+  test('SubscriptionService isPro notifier updates correctly', () {
+    expect(SubscriptionService.instance.isPro.value, false);
+    SubscriptionService.instance.isPro.value = true;
+    expect(SubscriptionService.instance.isPro.value, true);
+    SubscriptionService.instance.isPro.value = false;
+  });
+
+  testWidgets('free user hits 5 item limit and sees upgrade dialog on 6th item', (
+    tester,
+  ) async {
+    SubscriptionService.instance.isPro.value = false;
+
+    // Add 5 items
+    for (var i = 1; i <= 5; i++) {
+      await tester.runAsync(
+        () => addItems(
+          barcode: 'item-$i',
+          name: 'Food $i',
+          expiry: daysFromToday(i + 2),
+        ),
+      );
+    }
+
+    await tester.pumpWidget(const ExpiredApp());
+    await settle(tester);
+
+    // Try to add the 6th item
+    await tester.tap(find.text('Scan / Add'));
+    await settle(tester);
+
+    expect(find.text('Free Limit (5/5 Items)'), findsOneWidget);
+    expect(find.text('Get Unlimited (\$9.99/mo)'), findsOneWidget);
+  });
 }

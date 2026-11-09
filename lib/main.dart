@@ -1,8 +1,13 @@
 import 'package:expired/ad_banner_widget.dart';
+import 'package:expired/ad_service.dart';
+import 'package:expired/analytics_service.dart';
 import 'package:expired/backup_helper.dart';
 import 'package:expired/barcode_service.dart';
 import 'package:expired/database_helper.dart';
 import 'package:expired/notification_service.dart';
+import 'package:expired/pro_paywall_sheet.dart';
+import 'package:expired/subscription_service.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -14,9 +19,23 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await NotificationService.instance.init();
   try {
+    if (Firebase.apps.isEmpty) {
+      await Firebase.initializeApp();
+    }
+    await AnalyticsService.instance.init();
+  } catch (_) {
+    // Best-effort Firebase initialization
+  }
+  try {
     await MobileAds.instance.initialize();
+    AdService.instance.preloadInterstitial();
   } catch (_) {
     // Best-effort ad initialization
+  }
+  try {
+    await SubscriptionService.instance.init();
+  } catch (_) {
+    // Best-effort subscription initialization
   }
   runApp(const ExpiredApp());
 }
@@ -33,6 +52,10 @@ class ExpiredApp extends StatelessWidget {
 
     return MaterialApp(
       title: 'Expired',
+      navigatorObservers: [
+        if (AnalyticsService.instance.navigatorObserver != null)
+          AnalyticsService.instance.navigatorObserver!,
+      ],
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
@@ -175,6 +198,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
       });
       // Maintain offline mirror backup in background
       LocalBackupHelper.instance.updateMirrorBackup();
+      AnalyticsService.instance.logScreen('dashboard_screen');
     } catch (_) {
       if (!mounted) return;
       setState(() => _products.clear());
@@ -187,6 +211,46 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
     String? initialBarcode,
     String? initialLocation,
   }) async {
+    // Check if free user reached the 5-item limit when adding a new item
+    if (product == null && !SubscriptionService.instance.isPro.value) {
+      if (_products.length >= 5) {
+        showDialog<void>(
+          context: context,
+          builder: (dialogCtx) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.stars_rounded, color: Color(0xFFFF5A3C)),
+                SizedBox(width: 8),
+                Text('Free Limit (5/5 Items)'),
+              ],
+            ),
+            content: const Text(
+              'Free accounts can track up to 5 items simultaneously. '
+              'Upgrade to Expired Pro (\$9.99/mo) for unlimited entries, '
+              '100% ad-free experience, and Google Drive cloud sync!',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogCtx).pop(),
+                child: const Text('Later'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFFF5A3C),
+                ),
+                onPressed: () {
+                  Navigator.of(dialogCtx).pop();
+                  showProPaywall(context);
+                },
+                child: const Text('Get Unlimited (\$9.99/mo)'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+    }
+
     final navigator = Navigator.of(context);
 
     await showModalBottomSheet<void>(
@@ -258,6 +322,10 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
       reason,
       storageLocation: product.storageLocation,
     );
+    AnalyticsService.instance.logFoodFinished(
+      reason: reason,
+      daysLeft: product.daysUntilExpiry,
+    );
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
@@ -292,6 +360,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
       newExpiryDate: newExpiry,
     );
     await _loadProducts();
+    AnalyticsService.instance.logFoodThawed();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -422,6 +491,22 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                   ),
                 ),
                 const SizedBox(height: 16),
+                const Divider(height: 1),
+                const SizedBox(height: 4),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.stars_rounded, color: indigo),
+                  title: const Text(
+                    'Upgrade to Expired Pro',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: const Text('Remove ads & support development'),
+                  trailing: const Icon(Icons.chevron_right_rounded, color: slate500),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    showProPaywall(context);
+                  },
+                ),
                 const Divider(height: 1),
                 const SizedBox(height: 4),
                 ListTile(
@@ -807,8 +892,14 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
                     ),
             ),
 
-            // Adaptive Bottom AdMob Banner Container
-            const BottomAdBanner(),
+            // Adaptive Bottom AdMob Banner Container (Auto-hidden for Pro users)
+            ValueListenableBuilder<bool>(
+              valueListenable: SubscriptionService.instance.isPro,
+              builder: (context, isPro, _) {
+                if (isPro) return const SizedBox.shrink();
+                return const BottomAdBanner();
+              },
+            ),
           ],
         ),
       ),
@@ -1704,7 +1795,14 @@ class _ProductFormState extends State<ProductForm> {
         );
       }
 
+      AnalyticsService.instance.logFoodAdded(
+        storageLocation: storageLocation,
+        isHomemade: isHomemade,
+        daysUntilExpiry: shelfDays,
+      );
       await widget.onSave();
+      // Show full-page interstitial ad after saving an entry for free users (Pro users skip)
+      AdService.instance.showInterstitialAfterEntry();
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:expired/pro_paywall_sheet.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
@@ -10,7 +11,7 @@ class BottomAdBanner extends StatefulWidget {
 
   /// REPLACE WITH YOUR REAL ADMOB BANNER UNIT ID WHEN PUBLISHING:
   /// Create this in https://admob.google.com -> Apps -> Ad Units -> Banner
-  static const String _productionAndroidAdUnitId = 'ca-app-pub-XXXXXXXXXXXXXXXX/XXXXXXXXXX';
+  static const String _productionAndroidAdUnitId = 'ca-app-pub-2088829932165152/9674435682';
   static const String _productionIosAdUnitId = 'ca-app-pub-XXXXXXXXXXXXXXXX/XXXXXXXXXX';
 
   /// Standard Google Test Ad Unit IDs (guaranteed to work in testing)
@@ -79,42 +80,46 @@ class _BottomAdBannerState extends State<BottomAdBanner> {
   Widget build(BuildContext context) {
     if (!_isAdLoaded || _bannerAd == null) {
       // Minimal Pro upgrade teaser when ad is loading or offline
-      return Container(
-        width: double.infinity,
-        height: 50,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border(top: BorderSide(color: Colors.grey.shade200)),
-        ),
-        child: Center(
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.grey.shade200,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  'Ad',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.grey.shade600,
+      return GestureDetector(
+        onTap: () => showProPaywall(context),
+        child: Container(
+          width: double.infinity,
+          height: 50,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border(top: BorderSide(color: Colors.grey.shade200)),
+          ),
+          child: Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.shade200,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    'Ad',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.grey.shade600,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Expired Pro · Go 100% Ad-Free',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey.shade600,
-                  fontWeight: FontWeight.w500,
+                const SizedBox(width: 8),
+                Text(
+                  'Expired Pro · Go 100% Ad-Free',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey.shade600,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       );
