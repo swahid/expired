@@ -1,8 +1,10 @@
+import 'package:expired/ad_banner_widget.dart';
 import 'package:expired/backup_helper.dart';
 import 'package:expired/barcode_service.dart';
 import 'package:expired/database_helper.dart';
 import 'package:expired/notification_service.dart';
 import 'package:flutter/material.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -11,6 +13,11 @@ import 'package:url_launcher/url_launcher.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await NotificationService.instance.init();
+  try {
+    await MobileAds.instance.initialize();
+  } catch (_) {
+    // Best-effort ad initialization
+  }
   runApp(const ExpiredApp());
 }
 
@@ -801,7 +808,7 @@ class _ProductDashboardPageState extends State<ProductDashboardPage> {
             ),
 
             // Adaptive Bottom AdMob Banner Container
-            const _BottomAdBannerPlaceholder(),
+            const BottomAdBanner(),
           ],
         ),
       ),
@@ -864,55 +871,6 @@ class _StorageFilterChip extends StatelessWidget {
             fontWeight: FontWeight.w600,
             color: isSelected ? Colors.white : const Color(0xFF1E2233),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _BottomAdBannerPlaceholder extends StatelessWidget {
-  const _BottomAdBannerPlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    // Non-intrusive container reserved for the bottom adaptive AdMob banner
-    return Container(
-      width: double.infinity,
-      height: 52,
-      margin: const EdgeInsets.only(top: 2),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border(top: BorderSide(color: Colors.grey.shade200)),
-      ),
-      child: Center(
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade200,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                'Ad',
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.grey.shade600,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              'Expired Pro · Go 100% Ad-Free',
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey.shade600,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
         ),
       ),
     );
