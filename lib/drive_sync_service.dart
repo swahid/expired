@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:expired/backup_helper.dart';
 import 'package:flutter/foundation.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -14,28 +15,33 @@ class DriveSyncService {
   static const _appDataScope = 'https://www.googleapis.com/auth/drive.appdata';
   static const _backupFileName = 'expired_backup_v3.json';
 
-  final GoogleSignIn _googleSignIn = GoogleSignIn(
-    scopes: [_appDataScope],
-  );
+  final GoogleSignIn _googleSignIn = GoogleSignIn.instance;
 
   final ValueNotifier<GoogleSignInAccount?> currentUser =
       ValueNotifier<GoogleSignInAccount?>(null);
 
   final ValueNotifier<DateTime?> lastSyncTime = ValueNotifier<DateTime?>(null);
 
-  bool _initialized = false;
+  Future<void>? _initFuture;
 
-  Future<void> init() async {
-    if (kIsWeb) return;
-    if (_initialized) return;
-    _initialized = true;
+  Future<void> init() {
+    if (kIsWeb) return Future<void>.value();
+    return _initFuture ??= _performInit();
+  }
 
-    _googleSignIn.onCurrentUserChanged.listen((account) {
-      currentUser.value = account;
-    });
-
+  Future<void> _performInit() async {
     try {
-      await _googleSignIn.signInSilently();
+      await _googleSignIn.initialize();
+      _googleSignIn.authenticationEvents.listen((event) {
+        switch (event) {
+          case GoogleSignInAuthenticationEventSignIn():
+            currentUser.value = event.user;
+          case GoogleSignInAuthenticationEventSignOut():
+            currentUser.value = null;
+        }
+      });
+
+      await _googleSignIn.attemptLightweightAuthentication();
     } catch (_) {
       // Offline or first launch
     }
@@ -44,7 +50,10 @@ class DriveSyncService {
   /// Prompts Google Sign-In with Drive AppData scope.
   Future<GoogleSignInAccount?> signIn() async {
     try {
-      final account = await _googleSignIn.signIn();
+      await init();
+      final account = await _googleSignIn.authenticate(
+        scopeHint: [_appDataScope],
+      );
       currentUser.value = account;
       return account;
     } catch (e) {
@@ -69,7 +78,16 @@ class DriveSyncService {
 
     HttpClient? client;
     try {
-      final authHeaders = await account.authHeaders;
+      final authHeaders = await account.authorizationClient.authorizationHeaders(
+        [_appDataScope],
+        promptIfNecessary: true,
+      );
+      if (authHeaders == null) {
+        return (
+          success: false,
+          message: 'Google Drive AppData authorization denied.',
+        );
+      }
       final jsonBackup = await LocalBackupHelper.instance.exportFullDataAsJson();
 
       client = HttpClient();
@@ -133,7 +151,16 @@ class DriveSyncService {
 
     HttpClient? client;
     try {
-      final authHeaders = await account.authHeaders;
+      final authHeaders = await account.authorizationClient.authorizationHeaders(
+        [_appDataScope],
+        promptIfNecessary: true,
+      );
+      if (authHeaders == null) {
+        return (
+          success: false,
+          message: 'Google Drive AppData authorization denied.',
+        );
+      }
       final fileId = await _findExistingFileId(authHeaders);
       if (fileId == null) {
         return (success: false, message: 'No Expired backup found in this Google account.');

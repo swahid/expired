@@ -1,6 +1,7 @@
 import 'package:expired/database_helper.dart';
 import 'package:expired/main.dart';
 import 'package:expired/notification_service.dart';
+import 'package:expired/subscription_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart';

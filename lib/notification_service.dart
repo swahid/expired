@@ -38,7 +38,7 @@ class NotificationService {
       tz.initializeTimeZones();
       const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
       const initSettings = InitializationSettings(android: androidInit);
-      await _plugin.initialize(initSettings);
+      await _plugin.initialize(settings: initSettings);
       _ready = true;
     } catch (_) {
       _ready = false;
@@ -74,12 +74,12 @@ class NotificationService {
           day.day,
         ).difference(DateTime.utc(now.year, now.month, now.day)).inDays;
         await _plugin.zonedSchedule(
-          _baseId + dayIndex,
-          entry.value.title,
-          entry.value.body,
+          id: _baseId + dayIndex,
+          title: entry.value.title,
+          body: entry.value.body,
           // Convert the local wall-clock time to an absolute instant.
-          tz.TZDateTime.from(fireAt, tz.UTC),
-          _notificationDetails(),
+          scheduledDate: tz.TZDateTime.from(fireAt, tz.UTC),
+          notificationDetails: _notificationDetails(),
           androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
         );
       }

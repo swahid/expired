@@ -240,7 +240,7 @@ class _ProPaywallSheetState extends State<_ProPaywallSheet> {
                           ),
                           elevation: 0,
                         ),
-                        onPressed: _isPurchasing
+                        onPressed: (_isLoading || _isPurchasing)
                             ? null
                             : () {
                                 if (monthlyPackage != null) {
@@ -255,7 +255,7 @@ class _ProPaywallSheetState extends State<_ProPaywallSheet> {
                                   );
                                 }
                               },
-                        icon: _isPurchasing
+                        icon: (_isLoading || _isPurchasing)
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
@@ -266,9 +266,11 @@ class _ProPaywallSheetState extends State<_ProPaywallSheet> {
                               )
                             : const Icon(Icons.flash_on_rounded),
                         label: Text(
-                          _isPurchasing
-                              ? 'Processing...'
-                              : 'Subscribe Now · ${monthlyPackage?.storeProduct.priceString ?? '\$9.99/mo'}',
+                          _isLoading
+                              ? 'Loading plans...'
+                              : _isPurchasing
+                                  ? 'Processing...'
+                                  : 'Subscribe Now · ${monthlyPackage?.storeProduct.priceString ?? '\$9.99/mo'}',
                           style: const TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w700,

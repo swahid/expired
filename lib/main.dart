@@ -1864,6 +1864,14 @@ class _ProductFormState extends State<ProductForm> {
             ),
           ),
           const SizedBox(height: 16),
+          if (_loadError != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                _loadError!,
+                style: const TextStyle(color: Color(0xFFF59E0B), fontSize: 12),
+              ),
+            ),
 
           // Storage Location Selector (Fridge | Freezer | Pantry)
           const Text(

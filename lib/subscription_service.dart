@@ -78,8 +78,10 @@ class SubscriptionService {
   /// Purchases a selected package via Google Play Billing.
   Future<bool> purchasePackage(Package package) async {
     try {
-      final customerInfo = await Purchases.purchasePackage(package);
-      _updateEntitlementStatus(customerInfo);
+      final purchaseResult = await Purchases.purchase(
+        PurchaseParams.package(package),
+      );
+      _updateEntitlementStatus(purchaseResult.customerInfo);
       return isPro.value;
     } catch (e) {
       debugPrint('[RevenueCat] Purchase failed or cancelled: $e');
